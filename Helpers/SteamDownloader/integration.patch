@@ -1,0 +1,267 @@
+--- a/DepotDownloader/Steam3Session.cs
++++ b/DepotDownloader/Steam3Session.cs
+@@ -183,6 +183,41 @@
+             }
+         }
+ 
++        public async Task<List<CFamilyGroups_GetSharedLibraryApps_Response.SharedApp>> DeckFamilyApps()
++        {
++            var service = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<FamilyGroups>();
++            var group = await service.GetFamilyGroupForUser(new CFamilyGroups_GetFamilyGroupForUser_Request
++            {
++                steamid = steamUser.SteamID.ConvertToUInt64()
++            });
++            if (group.Result != EResult.OK) throw new Exception("Steam family information unavailable.");
++            if (group.Body.is_not_member_of_any_group || group.Body.family_groupid == 0) return [];
++            var apps = await service.GetSharedLibraryApps(new CFamilyGroups_GetSharedLibraryApps_Request
++            {
++                family_groupid = group.Body.family_groupid,
++                steamid = steamUser.SteamID.ConvertToUInt64(),
++                include_own = true, include_excluded = false, include_non_games = false, language = "italian"
++            });
++            if (apps.Result != EResult.OK) throw new Exception("Steam family library unavailable.");
++            return apps.Body.apps;
++        }
++
++        public async Task RequestDeckAppInfos(uint[] appIDs)
++        {
++            var tokens = await steamApps.PICSGetAccessTokens(appIDs, []);
++            var requests = appIDs.Select(id => {
++                var request = new SteamApps.PICSRequest(id);
++                if (tokens.AppTokens.TryGetValue(id, out var token)) request.AccessToken = token;
++                return request;
++            }).ToArray();
++            var results = await steamApps.PICSGetProductInfo(requests, []);
++            foreach (var result in results.Results)
++            {
++                foreach (var app in result.Apps) AppInfo[app.Key] = app.Value;
++                foreach (var id in result.UnknownApps) AppInfo[id] = null;
++            }
++        }
++
+         public async Task RequestPackageInfo(IEnumerable<uint> packageIds)
+         {
+             var packages = packageIds.ToList();
+@@ -444,7 +479,7 @@
+                             _ = AccountSettingsStore.Instance.GuardData.TryGetValue(logonDetails.Username, out var guarddata);
+                             authSession = await steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(new AuthSessionDetails
+                             {
+-                                DeviceFriendlyName = nameof(DepotDownloader),
++                                DeviceFriendlyName = "MacGameDeck",
+                                 Username = logonDetails.Username,
+                                 Password = logonDetails.Password,
+                                 IsPersistentSession = ContentDownloader.Config.RememberPassword,
+@@ -471,7 +506,7 @@
+                         {
+                             var session = await steamClient.Authentication.BeginAuthSessionViaQRAsync(new AuthSessionDetails
+                             {
+-                                DeviceFriendlyName = nameof(DepotDownloader),
++                                DeviceFriendlyName = "MacGameDeck",
+                                 IsPersistentSession = ContentDownloader.Config.RememberPassword,
+                             });
+ 
+@@ -666,6 +701,11 @@
+                 return;
+             }
+ 
++            if (!DeckIntegration.Account(steamUser.SteamID.ConvertToUInt64().ToString(), logonDetails.Username))
++            {
++                Abort(false);
++                return;
++            }
+             Console.WriteLine(" Done!");
+ 
+             this.seq++;
+@@ -702,6 +742,11 @@
+ 
+         private static void DisplayQrCode(string challengeUrl)
+         {
++            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL")))
++            {
++                DeckIntegration.Emit(new { type = "qr", url = challengeUrl });
++                return;
++            }
+             // Encode the link as a QR code
+             using var qrGenerator = new QRCodeGenerator();
+             var qrCodeData = qrGenerator.CreateQrCode(challengeUrl, QRCodeGenerator.ECCLevel.L);
+--- a/DepotDownloader/ContentDownloader.cs
++++ b/DepotDownloader/ContentDownloader.cs
+@@ -325,6 +325,47 @@
+             Task.Run(steam3.TickCallbacks);
+ 
+             return true;
++        }
++
++        public static async Task ExportDeckLibraryAsync(string destination)
++        {
++            for (var i = 0; steam3.Licenses == null && i < 300; i++) await Task.Delay(200);
++            if (steam3.Licenses == null) throw new ContentDownloaderException("Steam licenses unavailable.");
++            var packageIDs = steam3.Licenses.Select(x => x.PackageID).Distinct().ToList();
++            await steam3.RequestPackageInfo(packageIDs);
++            if (packageIDs.Any(id => !steam3.PackageInfo.ContainsKey(id) || steam3.PackageInfo[id] == null))
++                throw new ContentDownloaderException("Incomplete package metadata; preserving the previous library.");
++            var appIDs = packageIDs.Where(id => steam3.PackageInfo.ContainsKey(id) && steam3.PackageInfo[id] != null)
++                .SelectMany(id => steam3.PackageInfo[id].KeyValues["appids"].Children.Select(x => x.AsUnsignedInteger()))
++                .Distinct().Where(id => id > 0).ToList();
++            var familyApps = await steam3.DeckFamilyApps();
++            var familyByID = familyApps.GroupBy(x => x.appid).ToDictionary(x => x.Key, x => x.First());
++            var ownAppIDs = appIDs.ToHashSet();
++            appIDs = appIDs.Union(familyApps.Select(x => x.appid)).ToList();
++            var accountID = steam3.steamUser.SteamID.ConvertToUInt64();
++            var games = new List<object>();
++            for (var start = 0; start < appIDs.Count; start += 100)
++            {
++                await steam3.RequestDeckAppInfos(appIDs.Skip(start).Take(100).ToArray());
++                foreach (var id in appIDs.Skip(start).Take(100))
++                {
++                    var common = GetSteam3AppSection(id, EAppInfoSection.Common);
++                    var type = common?["type"].AsString()?.ToLowerInvariant();
++                    if (type == "game" || type == "demo" || type == "mod")
++                    {
++                        familyByID.TryGetValue(id, out var family);
++                        var owners = family?.owner_steamids.Where(x => x != accountID).Select(x => x.ToString()).ToArray() ?? [];
++                        games.Add(new { appid = id, name = common["name"].AsString(),
++                            platforms = (common["oslist"].AsString() ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries),
++                            familyOwners = ownAppIDs.Contains(id) ? Array.Empty<string>() : owners,
++                            iconHash = common["icon"].AsString() });
++                    }
++                }
++                DeckIntegration.Emit(new { type = "library_progress", done = Math.Min(start + 100, appIDs.Count), total = appIDs.Count });
++            }
++            var steamID = steam3.steamUser.SteamID.ConvertToUInt64().ToString();
++            File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(new { steamID, games }));
++            DeckIntegration.Emit(new { type = "library_complete", count = games.Count });
+         }
+ 
+         public static void ShutdownSteam3()
+@@ -542,11 +583,16 @@
+                 }
+             }
+ 
++            if (infos.Count != depotIdsFound.Count || infos.Count == 0)
++                throw new ContentDownloaderException("Not all required depots are accessible. Installation is incomplete.");
++
+             Console.WriteLine();
+ 
+             try
+             {
+                 await DownloadSteam3Async(infos).ConfigureAwait(false);
++                DeckIntegration.Metadata(appId, GetSteam3AppSection(appId, EAppInfoSection.Common),
++                    GetSteam3AppSection(appId, EAppInfoSection.Config), Config.InstallDirectory);
+             }
+             catch (OperationCanceledException)
+             {
+@@ -1325,6 +1371,7 @@
+                 downloadCounter.totalBytesUncompressed += chunk.UncompressedLength;
+ 
+                 Ansi.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
++                DeckIntegration.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
+             }
+ 
+             if (remainingChunks == 0)
+--- a/DepotDownloader/Program.cs
++++ b/DepotDownloader/Program.cs
+@@ -159,6 +159,14 @@
+ 
+             #endregion
+ 
++            var libraryFile = GetParameter<string>(args, "-deck-library");
++            if (libraryFile != null)
++            {
++                if (!InitializeSteam(username, password)) return 1;
++                try { await ContentDownloader.ExportDeckLibraryAsync(libraryFile); return 0; }
++                catch (Exception) { Console.WriteLine("Unable to load the authenticated Steam library."); return 1; }
++                finally { ContentDownloader.ShutdownSteam3(); }
++            }
+             var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);
+             if (appId == ContentDownloader.INVALID_APP_ID)
+             {
+--- a/DepotDownloader/AccountSettingsStore.cs
++++ b/DepotDownloader/AccountSettingsStore.cs
+@@ -42,18 +42,18 @@
+         }
+ 
+         public static AccountSettingsStore Instance;
+-        static readonly IsolatedStorageFile IsolatedStorage = IsolatedStorageFile.GetUserStoreForAssembly();
++        // MacGameDeck supplies a private, temporary working directory.
+ 
+         public static void LoadFromFile(string filename)
+         {
+             if (Loaded)
+                 throw new Exception("Config already loaded");
+ 
+-            if (IsolatedStorage.FileExists(filename))
++            if (File.Exists(filename))
+             {
+                 try
+                 {
+-                    using var fs = IsolatedStorage.OpenFile(filename, FileMode.Open, FileAccess.Read);
++                    using var fs = File.Open(filename, FileMode.Open, FileAccess.Read);
+                     using var ds = new DeflateStream(fs, CompressionMode.Decompress);
+                     Instance = Serializer.Deserialize<AccountSettingsStore>(ds);
+                 }
+@@ -78,7 +78,7 @@
+ 
+             try
+             {
+-                using var fs = IsolatedStorage.OpenFile(Instance.FileName, FileMode.Create, FileAccess.Write);
++                using var fs = File.Open(Instance.FileName, FileMode.Create, FileAccess.Write);
+                 using var ds = new DeflateStream(fs, CompressionMode.Compress);
+                 Serializer.Serialize(ds, Instance);
+             }
+--- a/DepotDownloader/DeckIntegration.cs
++++ b/DepotDownloader/DeckIntegration.cs
+@@ -0,0 +1,53 @@
++// This file is subject to the terms and conditions defined
++// in file 'LICENSE', which is part of this source code package.
++
++using System;
++using System.IO;
++using System.Linq;
++using System.Text.Json;
++using SteamKit2;
++
++namespace DepotDownloader
++{
++    // MacGameDeck integration changes, 2026-10-12.
++    internal static class DeckIntegration
++    {
++        public static void Emit(object value) => Console.WriteLine("MACGAMEDECK_EVENT:" + JsonSerializer.Serialize(value));
++
++        private static long lastProgress;
++        public static void Progress(ulong done, ulong total)
++        {
++            var now = Environment.TickCount64;
++            var previous = System.Threading.Interlocked.Read(ref lastProgress);
++            if (now - previous < 500 || System.Threading.Interlocked.CompareExchange(ref lastProgress, now, previous) != previous) return;
++            Emit(new { type = "download_progress", done, total });
++        }
++
++        public static bool Account(string steamID, string username)
++        {
++            var expected = Environment.GetEnvironmentVariable("MACGAMEDECK_EXPECTED_STEAMID");
++            if (!string.IsNullOrEmpty(expected) && expected != steamID)
++            {
++                Emit(new { type = "account_mismatch" });
++                return false;
++            }
++            Emit(new { type = "account", steamID, username });
++            return true;
++        }
++
++        public static void Metadata(uint appID, KeyValue common, KeyValue config, string installDirectory)
++        {
++            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL"))) return;
++            var launches = config?["launch"].Children.Select(entry => new {
++                executable = entry["executable"].AsString(), arguments = entry["arguments"].AsString(),
++                workingDirectory = entry["workingdir"].AsString(), description = entry["description"].AsString(),
++                oslist = entry["config"]["oslist"].AsString(), osarch = entry["config"]["osarch"].AsString()
++            }).ToArray();
++            var value = new { appID, title = common?["name"].AsString(), launches };
++            var target = Path.Combine(installDirectory, ".MacGameDeck");
++            Directory.CreateDirectory(target);
++            File.WriteAllText(Path.Combine(target, "metadata.json"), JsonSerializer.Serialize(value));
++            Emit(new { type = "download_complete", appID });
++        }
++    }
++}
