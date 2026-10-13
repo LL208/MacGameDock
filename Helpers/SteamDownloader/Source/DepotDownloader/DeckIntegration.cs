@@ -35,14 +35,6 @@ namespace DepotDownloader
             return true;
         }
 
-        public static void ClientReceipt(uint appID, uint buildID, string os, string installDirectory, object[] depots)
-        {
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL"))) return;
-            var target = Path.Combine(installDirectory, ".MacGameDeck");
-            Directory.CreateDirectory(target);
-            File.WriteAllText(Path.Combine(target, "client-receipt.json"), JsonSerializer.Serialize(new { appID, buildID, os, depots }));
-        }
-
         public static void Metadata(uint appID, KeyValue common, KeyValue config, string installDirectory)
         {
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL"))) return;

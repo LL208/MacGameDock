@@ -591,14 +591,6 @@ namespace DepotDownloader
             try
             {
                 await DownloadSteam3Async(infos).ConfigureAwait(false);
-                if (!isUgc)
-                {
-                    var receiptDepots = infos.Select(info => new {
-                        depotID = info.DepotId, manifestID = info.ManifestId.ToString(),
-                        size = Util.LoadManifestFromFile(Path.Combine(info.InstallDir, CONFIG_DIR), info.DepotId, info.ManifestId, false)?.TotalUncompressedSize ?? 0
-                    }).Cast<object>().ToArray();
-                    DeckIntegration.ClientReceipt(appId, GetSteam3AppBuildNumber(appId, branch), os, Config.InstallDirectory, receiptDepots);
-                }
                 DeckIntegration.Metadata(appId, GetSteam3AppSection(appId, EAppInfoSection.Common),
                     GetSteam3AppSection(appId, EAppInfoSection.Config), Config.InstallDirectory);
             }

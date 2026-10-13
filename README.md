@@ -88,3 +88,31 @@ La sessione del downloader non è una sessione del client ufficiale. Il client p
 Validazione: 43 test automatici, build del helper .NET e avvio del runtime incluso, build Swift release e verifica della firma ad hoc. Non è stata effettuata una prova reale di autenticazione del client nel container, di avvio di Nasty Zombies o di un trofeo sbloccato e sincronizzato. Il percorso è sperimentale: compatibilità Wine/Steam, DRM, supporto del gioco, account/licenza e stato della rete restano determinanti. Una richiesta di avvio riuscita non viene mostrata come conferma di trofei sincronizzati.
 
 Riferimenti: [requisiti SteamAPI_Init e avvio tramite Steam](https://partner.steamgames.com/doc/api/steam_api), [registrazione dei trofei dal gioco](https://partner.steamgames.com/doc/features/achievements), [opzione Steam -silent](https://help.steampowered.com/en/faqs/view/0188-6BB7-D467-08E1).
+
+## 0.6.1 — Ripristino dell'avvio diretto
+
+L'integrazione del client ufficiale introdotta nella 0.6.0 è stata rimossa: causava l'apertura di Steam e una richiesta di installazione per giochi già scaricati, tra cui Dead Estate e Cruelty Squad. **Gioca** torna al percorso diretto precedente: eseguibile del gioco, argomenti e cartella di lavoro originali, nello stesso prefix Wine. Non installa Steam, non genera manifest per il client e non richiede un account per avviare un gioco gestito già installato. Le ore restano locali, senza sincronizzazione Steam. Download, sessione salvata del downloader, controller e Workshop restano disponibili; la pagina trofei è solo consultazione.
+
+Nessuna migrazione distruttiva: i file dei giochi, i salvataggi e le eventuali cartelle Steam create dalla 0.6.0 vengono conservati. Se Steam è ancora aperto da un avvio precedente, chiuderlo prima della prova. Gli eventuali requisiti Steam/DRM imposti dal gioco stesso restano fuori dal controllo del launcher.
+
+Validazione 0.6.1: 39 test superati, incluso un avvio reale di un processo runtime fittizio che verifica eseguibile e argomenti del gioco Steam senza account e senza creare un client Steam. Dead Estate e Cruelty Squad non sono stati provati durante questa verifica.
+
+## 0.6.2 — Dipendenze Steam automatiche
+
+Corretto il falso errore “Installer della dipendenza 4.0 mancante”: gli installer erano presenti, ma gli script Steam moderni li richiamano con wrapper `.cmd` e il precedente resolver accettava solo `.exe`/`.msi`. I wrapper Steam standard vengono risolti al payload locale con i suoi argomenti silenziosi; gli script batch diversi restano eseguibili tramite `cmd`. Supportati anche `process msiexec` con MSI indicato negli argomenti e macro `%INSTALLDIR%`, controllando che i percorsi restino nella cartella del gioco.
+
+La preparazione individua i componenti dai file installscript, mostra nomi comprensibili (DotNet, XNA, vcredist, DirectX), usa la cartella corretta per ogni installer e installa .NET prima di XNA. Se manca un pacchetto `_CommonRedist/<famiglia>/<versione>`, scarica automaticamente il gruppo richiesto dall'app Steamworks Common Redistributables 228980 usando il downloader e la sessione salvata. La cache `Tools/CommonRedist` riusa i file, include i contenuti di supporto e non sostituisce gli script o installer già presenti nel gioco. I marker vengono creati solo dopo il successo del processo; pausa, errori e retry conservano i progressi senza dichiarare pronto un gioco con preparazione fallita. Non richiede il client Steam ufficiale per questa operazione.
+
+Verifica: 44 test superati, compreso un flusso con processi simulati per download del pacchetto mancante, errore installer, retry e non ripetizione dei passaggi completati. Verificata in sola lettura la risoluzione degli script reali sul Mac: Blood and Bacon → .NET 4.0 + XNA 4.0; Nasty Zombies → DirectX June 2010 + Visual C++ 2022 x64 e x86. In questi due casi i payload erano già presenti. Build release e firma ad hoc verificate. Gli installer Microsoft non sono stati eseguiti sui container reali durante questa verifica.
+
+La modifica automatizza le dipendenze dichiarate negli script supportati; non certifica la compatibilità di tutti i giochi, non installa driver GPU Windows sul Mac e non introduce nuovi profili grafici. Le operazioni di registro negli installscript e i percorsi esterni non riconosciuti restano segnalati anziché eseguiti alla cieca. L'installazione dei runtime Microsoft in Wine può ancora fallire per limiti del runtime; il messaggio identifica il componente e il gioco non viene marcato pronto. Riferimento: [Steamworks Common Redistributables](https://partner.steamgames.com/doc/features/common_redist).
+
+## 0.6.3 — Attesa dell'inizializzazione Wine e diagnosi
+
+Il controllo immediato dei file del prefix dopo `wineboot` poteva fallire mentre Wine stava ancora scrivendo i registri. Sui container reali di Blood and Bacon e Nasty Zombies, i tre file richiesti sono ora presenti; i registri risultano scritti circa 14 secondi dopo kernel32.dll. È una spiegazione compatibile con il falso errore osservato, non una prova completa dell'avvio dei giochi.
+
+La preparazione ora riusa un prefix che passa già la validazione. Quando serve inizializzarlo, attende fino a 60 secondi che tutti i file richiesti siano presenti, con controllo della cancellazione. Non elimina o ricrea container e salvataggi. Un timeout elenca i file ancora mancanti. La presenza di questi file verifica la struttura del prefix, non certifica la compatibilità del gioco o tutti i servizi Wine.
+
+L'output della preparazione Wine viene raccolto in modo limitato e salvato nel log del gioco, con runtime, comando ed exit code. Nessun output di autenticazione Steam è incluso. Il pulsante **Apri log** è disponibile sui download falliti. I messaggi `nw_read_request_report` rappresentano invece errori di rete della console: da soli non identificano quale richiesta sia scaduta e non spiegano il fallimento del controllo locale dei file Wine.
+
+Validazione: 47 test superati, inclusi creazione ritardata dei registri, timeout senza perdita dei file e cancellazione dell'attesa. Verifica dei container reali in sola lettura. Non sono stati avviati i giochi o gli installer Microsoft reali in questo passaggio.

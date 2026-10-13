@@ -60,22 +60,14 @@
 +            if (infos.Count != depotIdsFound.Count || infos.Count == 0)
 +                throw new ContentDownloaderException("Not all required depots are accessible. Installation is incomplete.");
 +
-@@ -549,0 +594,10 @@
-+                if (!isUgc)
-+                {
-+                    var receiptDepots = infos.Select(info => new {
-+                        depotID = info.DepotId, manifestID = info.ManifestId.ToString(),
-+                        size = Util.LoadManifestFromFile(Path.Combine(info.InstallDir, CONFIG_DIR), info.DepotId, info.ManifestId, false)?.TotalUncompressedSize ?? 0
-+                    }).Cast<object>().ToArray();
-+                    DeckIntegration.ClientReceipt(appId, GetSteam3AppBuildNumber(appId, branch), os, Config.InstallDirectory, receiptDepots);
-+                }
+@@ -549,0 +594,2 @@
 +                DeckIntegration.Metadata(appId, GetSteam3AppSection(appId, EAppInfoSection.Common),
 +                    GetSteam3AppSection(appId, EAppInfoSection.Config), Config.InstallDirectory);
-@@ -1327,0 +1382 @@
+@@ -1327,0 +1374 @@
 +                DeckIntegration.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
 --- a/DepotDownloader/DeckIntegration.cs
 +++ b/DepotDownloader/DeckIntegration.cs
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,53 @@
 +// This file is subject to the terms and conditions defined
 +// in file 'LICENSE', which is part of this source code package.
 +
@@ -111,14 +103,6 @@
 +            }
 +            Emit(new { type = "account", steamID, username });
 +            return true;
-+        }
-+
-+        public static void ClientReceipt(uint appID, uint buildID, string os, string installDirectory, object[] depots)
-+        {
-+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL"))) return;
-+            var target = Path.Combine(installDirectory, ".MacGameDeck");
-+            Directory.CreateDirectory(target);
-+            File.WriteAllText(Path.Combine(target, "client-receipt.json"), JsonSerializer.Serialize(new { appID, buildID, os, depots }));
 +        }
 +
 +        public static void Metadata(uint appID, KeyValue common, KeyValue config, string installDirectory)

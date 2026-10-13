@@ -94,7 +94,7 @@ struct DeckMetadata: Decodable {
     }
 }
 enum WindowsArguments {
-    static func parse(_ value: String) throws -> [String] {
+    static func parse(_ value: String, allowPlaceholders: Bool = false) throws -> [String] {
         var result: [String] = [], current = "", quoted = false, started = false, slashes = 0
         for char in value {
             if char == "\\" { slashes += 1; started = true; continue }
@@ -111,7 +111,7 @@ enum WindowsArguments {
         current += String(repeating: "\\", count: slashes)
         guard !quoted else { throw DockError.message("Argomenti di avvio Steam non validi.") }
         if started { result.append(current) }
-        guard !result.contains(where: { $0.contains("%") }) else { throw DockError.message("Questo gioco richiede parametri Steam non ancora supportati.") }
+        guard allowPlaceholders || !result.contains(where: { $0.contains("%") }) else { throw DockError.message("Questo gioco richiede parametri Steam non ancora supportati.") }
         return result
     }
 }
@@ -121,11 +121,26 @@ enum WineRuntime {
             "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine64", "/opt/homebrew/bin/wine64"]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
+    static let requiredFiles = ["system.reg", "user.reg", "drive_c/windows/system32/kernel32.dll"]
+    static func missingFiles(prefix: URL) -> [String] {
+        requiredFiles.filter { !FileManager.default.fileExists(atPath: prefix.appendingPathComponent($0).path) }
+    }
     static func validate(prefix: URL) throws {
-        for path in ["system.reg", "user.reg", "drive_c/windows/system32/kernel32.dll"] {
-            guard FileManager.default.fileExists(atPath: prefix.appendingPathComponent(path).path) else {
-                throw DockError.message("Wine non ha inizializzato il container. I file del gioco sono conservati; installazione non ancora pronta.")
+        let missing = missingFiles(prefix: prefix)
+        guard missing.isEmpty else {
+            throw DockError.message("Container Wine incompleto: mancano \(missing.joined(separator: ", ")). I file del gioco sono conservati.")
+        }
+    }
+    static func waitUntilReady(prefix: URL, timeout: TimeInterval = 60, pollInterval: UInt64 = 200_000_000) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while true {
+            try Task.checkCancellation()
+            let missing = missingFiles(prefix: prefix)
+            if missing.isEmpty { return }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw DockError.message("Wine non ha completato l'inizializzazione entro \(Int(timeout)) secondi: mancano \(missing.joined(separator: ", ")). I file del gioco sono conservati. Consulta il log di preparazione.")
             }
+            try await Task.sleep(nanoseconds: pollInterval)
         }
     }
     static func environment(prefix: URL, runtime: String) -> [String: String] {
@@ -136,6 +151,21 @@ enum WineRuntime {
             env["CX_ROOT"] = cx; env["WINESERVER"] = cx + "/bin/wineserver"
         }
         return env
+    }
+}
+
+// Bounded diagnostics for Wine only; Steam authentication output remains discarded.
+private final class WineOutputTail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes = Data()
+    func append(_ value: Data) {
+        lock.lock(); defer { lock.unlock() }
+        bytes.append(value)
+        if bytes.count > 65536 { bytes.removeFirst(bytes.count - 65536) }
+    }
+    func snapshot() -> Data {
+        lock.lock(); defer { lock.unlock() }
+        return bytes
     }
 }
 
@@ -354,31 +384,73 @@ final class ManagedSteam: ObservableObject {
         }
         guard let runtime else { throw DockError.message("Runtime Wine non disponibile.") }
         message = "Inizializzazione ambiente Windows…"
-        let dependencies = try SteamDependencies.plan(in: directory)
-        try await prepare(prefix: prefix, runtime: runtime, arguments: ["wineboot", "-u"])
+        var dependencies = try SteamDependencies.plan(in: directory, allowMissing: true)
+        let groups = try SteamDependencies.missingGroups(dependencies)
+        if !groups.isEmpty {
+            message = "Recupero automatico dei componenti richiesti da Steam…"
+            let cache = root.appendingPathComponent("Tools/CommonRedist")
+            try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+            let list = root.appendingPathComponent("redist-files-\(UUID().uuidString).txt")
+            try Data(SteamDependencies.fileList(groups: groups).utf8).write(to: list, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: list) }
+            preparing = false
+            _ = try await run(["-app", "228980", "-os", "windows", "-all-archs", "-dir", cache.path, "-filelist", list.path, "-validate"], expected: expected)
+            preparing = true
+            try Task.checkCancellation()
+            try SteamDependencies.copyGroups(groups, from: cache, to: directory)
+            dependencies = try SteamDependencies.plan(in: directory)
+        }
+        if !WineRuntime.missingFiles(prefix: prefix).isEmpty {
+            try await prepare(prefix: prefix, runtime: runtime, arguments: ["wineboot", "-u"])
+            message = "Attendo che Wine completi il container…"
+            try await WineRuntime.waitUntilReady(prefix: prefix)
+        }
         try WineRuntime.validate(prefix: prefix)
         for step in dependencies {
-            message = "Installazione dipendenza: \(step.executable.lastPathComponent)…"
-            let executable = "Z:" + step.executable.path.replacingOccurrences(of: "/", with: "\\")
-            let args = step.executable.pathExtension.lowercased() == "msi" ? ["msiexec", "/i", executable] + step.arguments : [executable] + step.arguments
-            try await prepare(prefix: prefix, runtime: runtime, arguments: args)
+            message = "Installazione automatica: \(step.name)…"
+            do { try await prepare(prefix: prefix, runtime: runtime, arguments: step.wineArguments, directory: step.executable.deletingLastPathComponent()) }
+            catch is CancellationError { throw CancellationError() }
+            catch { throw DockError.message("Preparazione automatica di \(step.name) non riuscita: \(error.localizedDescription)") }
             try FileManager.default.createDirectory(at: step.marker.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data().write(to: step.marker, options: [.atomic])
         }
         message = "Installato nel container. Pronto per la prova di avvio."
         return (exe.path, directory.path, ManagedLaunch(prefix: prefix.path, arguments: arguments, workingDirectory: working.path, platform: .windows))
     }
-    private func prepare(prefix: URL, runtime: String, arguments: [String]) async throws {
+    private func prepare(prefix: URL, runtime: String, arguments: [String], directory: URL? = nil) async throws {
         try Task.checkCancellation()
         busy = true
         defer { busy = false; process = nil }
         let p = Process(); p.executableURL = URL(fileURLWithPath: runtime)
         p.arguments = arguments; p.environment = WineRuntime.environment(prefix: prefix, runtime: runtime)
-        p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        p.currentDirectoryURL = directory
+        p.standardInput = FileHandle.nullDevice
+        let output = WineOutputTail(), stdout = Pipe(), stderr = Pipe()
+        p.standardOutput = stdout; p.standardError = stderr
+        stdout.fileHandleForReading.readabilityHandler = { output.append($0.availableData) }
+        stderr.fileHandleForReading.readabilityHandler = { output.append($0.availableData) }
+        defer { stdout.fileHandleForReading.readabilityHandler = nil; stderr.fileHandleForReading.readabilityHandler = nil }
         process = p
         let status: Int32 = try await withCheckedThrowingContinuation { c in
             p.terminationHandler = { c.resume(returning: $0.terminationStatus) }
             do { try p.run() } catch { p.terminationHandler = nil; c.resume(throwing: error) }
+        }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        if let gameID = activeGame {
+            let folder = root.appendingPathComponent("Logs")
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent("\(gameID.uuidString).log")
+            let heading = Data("\nWine preparation — \(Date())\nRuntime: \(runtime)\nCommand: \(arguments.joined(separator: " "))\nExit: \(status)\n".utf8)
+            var content = Data()
+            if let reader = try? FileHandle(forReadingFrom: file) {
+                defer { try? reader.close() }
+                if let length = try? reader.seekToEnd() {
+                    try? reader.seek(toOffset: length > 131072 ? length - 131072 : 0)
+                    content = (try? reader.read(upToCount: 131072)) ?? Data()
+                }
+            }
+            content.append(heading); content.append(output.snapshot())
+            try? content.write(to: file, options: .atomic)
         }
         process = nil
         if cancelled || Task.isCancelled { throw CancellationError() }

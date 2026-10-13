@@ -6,7 +6,7 @@ struct MacGameDockApp: App {
     @StateObject private var library = Library()
     var body: some Scene {
         WindowGroup {
-            DockView().environmentObject(library).environmentObject(library.managedSteam).environmentObject(library.downloads).environmentObject(library.activity).environmentObject(library.steamServices)
+            DockView().environmentObject(library).environmentObject(library.managedSteam).environmentObject(library.downloads).environmentObject(library.activity)
                 .frame(minWidth: 940, minHeight: 650)
                 .preferredColorScheme(.dark)
         }
@@ -28,7 +28,6 @@ struct DockView: View {
     @State private var removing: Game?
     @State private var community: Game?
     @EnvironmentObject var activity: PlayActivity
-    @EnvironmentObject var steamServices: SteamClientServices
     @State private var installedOnly = false
     @State private var familyOnly = false
     @EnvironmentObject var queue: DownloadQueue
@@ -61,7 +60,7 @@ struct DockView: View {
                     Text(library.machine.chip).font(.subheadline.bold())
                     Text("\(library.machine.memoryGB) GB · \(library.machine.architecture)")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Anteprima di sviluppo · 0.6.0").font(.caption2).foregroundStyle(.secondary)
+                    Text("Anteprima di sviluppo · 0.6.3").font(.caption2).foregroundStyle(.secondary)
                 }
             }.padding(20).frame(width: 210)
                 .background(Color(red: 0.07, green: 0.08, blue: 0.12))
@@ -75,17 +74,7 @@ struct DockView: View {
             }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(Color(red: 0.10, green: 0.11, blue: 0.16))
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 8) {
-                SteamOperationView()
-                if !steamServices.message.isEmpty {
-                    HStack {
-                        if steamServices.busy { ProgressView().controlSize(.small) }
-                        Label(steamServices.message, systemImage: "trophy").font(.caption)
-                    }.padding(12)
-                }
-            }
-        }
+        .safeAreaInset(edge: .bottom) { SteamOperationView() }
         .sheet(item: $library.installSelection) { game in
             GameDetailsView(game: game).environmentObject(library)
         }
@@ -189,7 +178,6 @@ struct DockView: View {
 
     private func gameCard(_ game: Game) -> some View {
         let active = library.running.contains(game.id)
-        let preparingSteam = steamServices.busy && steamServices.requestedGame == game.id
         let pending = queue.jobs.last(where: { $0.game.id == game.id && [.queued, .active, .paused].contains($0.state) })
         let storeManaged = game.launchURL != nil || game.steamAppID != nil
         return VStack(alignment: .leading, spacing: 14) {
@@ -211,24 +199,17 @@ struct DockView: View {
                   systemImage: storeManaged ? "questionmark.circle" : (game.isNative ? "desktopcomputer" : "flask"))
                 .font(.caption).foregroundStyle(game.isNative ? Color.mint : Color.orange)
             Text(activity.label(game)).font(.caption).foregroundStyle(.secondary)
-                .help("Conteggio degli avvii diretti monitorati da MacGameDeck. Con Gioca con Steam, il tempo ufficiale è gestito dal client Steam.")
+                .help("Tempo locale dei processi monitorati da MacGameDeck, senza sincronizzazione con Steam.")
             if let error = activity.storageError { Text(error).font(.caption).foregroundStyle(.orange) }
             if game.isFamilyShared { Label("Famiglia Steam", systemImage: "person.2.fill").font(.caption).foregroundStyle(.mint) }
             HStack {
                 Button { if pending != nil { section = "Download" } else { library.launch(game) } } label: {
-                    Label(pending?.state.label ?? (preparingSteam ? "Preparo Steam…" : active ? "In esecuzione" : (game.steamAppID != nil ? (game.isInstalled ? "Gioca con Steam" : "Installa") : (storeManaged ? "Avvia nello store" : "Gioca"))),
+                    Label(pending?.state.label ?? (active ? "In esecuzione" : (game.steamAppID != nil ? (game.managedLaunch != nil && game.isInstalled ? "Gioca" : "Installa") : (storeManaged ? "Avvia nello store" : "Gioca"))),
                           systemImage: active ? "hourglass" : (game.isInstalled ? "play.fill" : "arrow.down.circle"))
                         .frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).disabled(active || preparingSteam)
+                }.buttonStyle(.borderedProminent).disabled(active)
                 Menu {
                     if game.steamAppID != nil {
-                        if game.isInstalled {
-                            Button("Accesso Steam per i trofei") { library.launchWithSteam(game, loginOnly: true) }
-                            Button("Avvia installazione Steam esistente") { library.launchWithSteam(game, existing: true) }
-                            if game.managedLaunch != nil {
-                                Button("Avvio diretto · trofei non garantiti") { library.launchDirect(game) }
-                            }
-                        }
                         Button("Workshop, mod e trofei") { community = game }
                         Button("Versioni e statistiche stimate") { library.installSelection = game }
                     }

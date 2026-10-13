@@ -16,6 +16,7 @@ struct GameArtwork: View {
     }
 }
 struct DownloadsView: View {
+    @EnvironmentObject var library: Library
     @EnvironmentObject var queue: DownloadQueue
     @EnvironmentObject var steam: ManagedSteam
     var body: some View {
@@ -61,6 +62,7 @@ struct DownloadsView: View {
                                 if [.paused, .failed, .cancelled].contains(job.state) {
                                     Button("Riprendi", systemImage: "play.fill") { queue.resume(job.id) }
                                 }
+                                if job.state == .failed { Button("Apri log") { library.openLog(job.game) } }
                                 if job.state == .queued { Button("Scarica prima") { queue.prioritize(job.id) } }
                             }
                         }.padding(16).background(Color.white.opacity(0.04)).cornerRadius(14)

@@ -72,7 +72,7 @@ struct GameCommunityView: View {
                     Text("Sfoglia il Workshop e incolla il link della mod. Il download non crea un'iscrizione Steam. Il gioco deve supportare le mod e il loro formato.").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         TextField("Link o ID Workshop", text: $input).textFieldStyle(.roundedBorder)
-                        Button("Scarica mod") { download(id) }.disabled(downloading || steam.busy || library.steamServices.busy || library.signingIn || library.syncingSteam || library.running.contains(game.id))
+                        Button("Scarica mod") { download(id) }.disabled(downloading || steam.busy || library.signingIn || library.syncingSteam || library.running.contains(game.id))
                         if downloading { Button("Annulla") { task?.cancel(); if ownsSteamOperation { steam.cancel() } } }
                     }
                     if let folder = downloaded {
@@ -81,7 +81,7 @@ struct GameCommunityView: View {
                     if !message.isEmpty { Text(message).font(.caption).textSelection(.enabled) }
                     SteamCommunityPage(url: URL(string: "https://steamcommunity.com/app/\(id)/workshop/")!).id("workshop-\(id)")
                 } else {
-                    Text("I trofei ufficiali vengono sbloccati dal gioco tramite Steamworks. Gioca con Steam avvia il titolo tramite il client ufficiale nello stesso ambiente, così il gioco può registrare gli obiettivi ottenuti. Questa pagina mostra i trofei pubblicati da Steam; i profili privati possono richiedere accesso web separato. La sincronizzazione dipende dal gioco e dalla connessione.").font(.callout).foregroundStyle(.secondary)
+                    Text("Questa pagina mostra i trofei pubblicati da Steam; i profili privati possono richiedere accesso web separato. MacGameDeck avvia direttamente i giochi e non sincronizza trofei o ore con Steam.").font(.callout).foregroundStyle(.secondary)
                     if let owner = library.data.steamAccount?.steamID {
                         SteamCommunityPage(url: URL(string: "https://steamcommunity.com/profiles/\(owner)/stats/\(id)/?tab=achievements")!).id("trophies-\(id)-\(owner)")
                     } else { Text("Collega l'account Steam per visualizzare i suoi trofei.") }
@@ -104,7 +104,7 @@ struct GameCommunityView: View {
                 guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count <= 4_000_000 else { throw DockError.message("Il Workshop non ha risposto correttamente.") }
                 let title = try WorkshopInput.validate(bytes, appID: appID, itemID: id)
                 try Task.checkCancellation()
-                guard !steam.busy, !library.steamServices.busy, !library.signingIn, !library.syncingSteam else { throw DockError.message("Attendi l'operazione Steam in corso.") }
+                guard !steam.busy, !library.signingIn, !library.syncingSteam else { throw DockError.message("Attendi l'operazione Steam in corso.") }
                 let directory = library.root.appendingPathComponent("Workshop/\(appID)/\(id)/\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 message = "Download: \(title)…"

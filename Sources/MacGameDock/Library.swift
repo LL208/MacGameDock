@@ -18,7 +18,6 @@ final class Library: ObservableObject {
     let machine = Machine.detect()
     let root: URL
     lazy var managedSteam = ManagedSteam(root: root)
-    lazy var steamServices = SteamClientServices(root: root)
     lazy var activity = PlayActivity(root: root)
     private var nativeApps: [UUID: NSRunningApplication] = [:]
     private var nativeTimer: Timer?
@@ -35,11 +34,13 @@ final class Library: ObservableObject {
     })
     private var processes: [UUID: Process] = [:]
     private var logHandles: [UUID: FileHandle] = [:]
+    private let runtimeResolver: () -> String?
     private var canPersist = true
     private let steamLogin = SteamLogin()
     private var steamSyncTask: Task<Void, Never>?
 
-    init() {
+    init(runtimeResolver: @escaping () -> String? = WineRuntime.detect) {
+        self.runtimeResolver = runtimeResolver
         if let directory = ProcessInfo.processInfo.environment["MACGAMEDOCK_DATA_DIRECTORY"], directory.hasPrefix("/") {
             root = URL(fileURLWithPath: directory, isDirectory: true)
         } else {
@@ -123,7 +124,7 @@ final class Library: ObservableObject {
     }
     func cancelSteamLogin() { managedSteam.cancel() }
     private func loadDirectCatalog(forceQR: Bool = false) {
-        guard !signingIn, !syncingSteam, !managedSteam.busy, !steamServices.busy, !installingJob else { return }
+        guard !signingIn, !syncingSteam, !managedSteam.busy, !installingJob else { return }
         signingIn = true
         Task {
             defer { signingIn = false }
@@ -166,7 +167,7 @@ final class Library: ObservableObject {
     func syncSteam() { loadDirectCatalog() }
 
     func disconnectSteam() {
-        guard !installingJob, !steamServices.busy else { error = "Attendi la preparazione Steam o metti in pausa il download prima di scollegare Steam."; return }
+        guard !installingJob else { error = "Metti in pausa il download prima di scollegare Steam."; return }
         cancelSteamLogin()
         steamSyncTask?.cancel()
         do {
@@ -224,23 +225,6 @@ final class Library: ObservableObject {
     }
 
     func launch(_ game: Game) {
-        if game.steamAppID != nil, game.isInstalled {
-            launchWithSteam(game, existing: game.managedLaunch == nil)
-        } else { launchDirect(game) }
-    }
-    func launchWithSteam(_ game: Game, existing: Bool = false, loginOnly: Bool = false) {
-        guard !running.contains(game.id), !steamServices.busy else { return }
-        guard !installingJob, !managedSteam.busy, !signingIn else { error = "Attendi o metti in pausa l'operazione Steam in corso prima di avviare il gioco."; return }
-        guard let account = data.steamAccount?.steamID else { error = "Collega l'account Steam prima di usare l'avvio con trofei."; return }
-        Task {
-            do {
-                try await steamServices.launch(game, account: account,
-                    runtime: WineRuntime.detect() ?? (data.winePath.isEmpty ? nil : data.winePath),
-                    downloader: managedSteam, existing: existing, loginOnly: loginOnly)
-            } catch { self.error = error.localizedDescription }
-        }
-    }
-    func launchDirect(_ game: Game) {
         guard !running.contains(game.id) else { return }
         if game.steamAppID != nil, game.managedLaunch == nil || !game.isInstalled {
             installSelection = game
@@ -282,7 +266,7 @@ final class Library: ObservableObject {
             } catch { self.error = error.localizedDescription }
             return
         }
-        let runtime = WineRuntime.detect() ?? data.winePath
+        let runtime = runtimeResolver() ?? data.winePath
         guard !runtime.isEmpty, FileManager.default.isExecutableFile(atPath: runtime) else {
             error = "Configura un runtime Wine valido nella schermata Il tuo Mac prima di avviare giochi Windows."
             return
@@ -340,7 +324,7 @@ final class Library: ObservableObject {
         installSelection = nil
     }
     private func performInstall(_ job: DownloadJob) async throws {
-        while managedSteam.busy || signingIn || steamServices.busy {
+        while managedSteam.busy || signingIn {
             try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 200_000_000)
         }
