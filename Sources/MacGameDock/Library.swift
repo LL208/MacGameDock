@@ -18,6 +18,10 @@ final class Library: ObservableObject {
     let machine = Machine.detect()
     let root: URL
     lazy var managedSteam = ManagedSteam(root: root)
+    lazy var steamServices = SteamClientServices(root: root)
+    lazy var activity = PlayActivity(root: root)
+    private var nativeApps: [UUID: NSRunningApplication] = [:]
+    private var nativeTimer: Timer?
     @Published var installSelection: Game?
     private var installingJob = false
     lazy var downloads = DownloadQueue(root: root, runner: { [weak self] job in
@@ -119,7 +123,7 @@ final class Library: ObservableObject {
     }
     func cancelSteamLogin() { managedSteam.cancel() }
     private func loadDirectCatalog(forceQR: Bool = false) {
-        guard !signingIn, !syncingSteam, !managedSteam.busy, !installingJob else { return }
+        guard !signingIn, !syncingSteam, !managedSteam.busy, !steamServices.busy, !installingJob else { return }
         signingIn = true
         Task {
             defer { signingIn = false }
@@ -162,7 +166,7 @@ final class Library: ObservableObject {
     func syncSteam() { loadDirectCatalog() }
 
     func disconnectSteam() {
-        guard !installingJob else { error = "Metti in pausa il download prima di scollegare Steam."; return }
+        guard !installingJob, !steamServices.busy else { error = "Attendi la preparazione Steam o metti in pausa il download prima di scollegare Steam."; return }
         cancelSteamLogin()
         steamSyncTask?.cancel()
         do {
@@ -220,6 +224,23 @@ final class Library: ObservableObject {
     }
 
     func launch(_ game: Game) {
+        if game.steamAppID != nil, game.isInstalled {
+            launchWithSteam(game, existing: game.managedLaunch == nil)
+        } else { launchDirect(game) }
+    }
+    func launchWithSteam(_ game: Game, existing: Bool = false, loginOnly: Bool = false) {
+        guard !running.contains(game.id), !steamServices.busy else { return }
+        guard !installingJob, !managedSteam.busy, !signingIn else { error = "Attendi o metti in pausa l'operazione Steam in corso prima di avviare il gioco."; return }
+        guard let account = data.steamAccount?.steamID else { error = "Collega l'account Steam prima di usare l'avvio con trofei."; return }
+        Task {
+            do {
+                try await steamServices.launch(game, account: account,
+                    runtime: WineRuntime.detect() ?? (data.winePath.isEmpty ? nil : data.winePath),
+                    downloader: managedSteam, existing: existing, loginOnly: loginOnly)
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    func launchDirect(_ game: Game) {
         guard !running.contains(game.id) else { return }
         if game.steamAppID != nil, game.managedLaunch == nil || !game.isInstalled {
             installSelection = game
@@ -238,10 +259,15 @@ final class Library: ObservableObject {
         if game.isNative && executable.pathExtension.lowercased() == "app" {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.arguments = game.managedLaunch?.arguments ?? []
-            NSWorkspace.shared.openApplication(at: executable, configuration: configuration) { _, error in
+            NSWorkspace.shared.openApplication(at: executable, configuration: configuration) { app, error in
                 Task { @MainActor in
                     if let error { self.error = error.localizedDescription }
-                    else { self.notice = "Richiesta di avvio inviata a macOS. Il monitoraggio dei giochi nativi non è ancora disponibile." }
+                    else if let app {
+                        self.nativeApps[game.id] = app; self.running.insert(game.id); self.activity.start(game)
+                        if self.nativeTimer == nil {
+                            self.nativeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.checkNativeApps() } }
+                        }
+                    }
                 }
             }
             return
@@ -251,8 +277,8 @@ final class Library: ObservableObject {
                 let p = Process(); p.executableURL = executable
                 p.arguments = game.managedLaunch?.arguments ?? []
                 p.currentDirectoryURL = game.managedLaunch.map { URL(fileURLWithPath: $0.workingDirectory) }
-                p.terminationHandler = { _ in Task { @MainActor in self.running.remove(game.id); self.processes.removeValue(forKey: game.id) } }
-                try p.run(); processes[game.id] = p; running.insert(game.id)
+                p.terminationHandler = { _ in Task { @MainActor in self.activity.stop(game); self.running.remove(game.id); self.processes.removeValue(forKey: game.id) } }
+                try p.run(); processes[game.id] = p; running.insert(game.id); activity.start(game)
             } catch { self.error = error.localizedDescription }
             return
         }
@@ -280,6 +306,7 @@ final class Library: ObservableObject {
             process.terminationHandler = { finished in
                 let status = finished.terminationStatus
                 Task { @MainActor in
+                    self.activity.stop(game)
                     self.running.remove(game.id)
                     self.processes.removeValue(forKey: game.id)
                     try? self.logHandles.removeValue(forKey: game.id)?.close()
@@ -291,7 +318,7 @@ final class Library: ObservableObject {
             processes[game.id] = process
             logHandles[game.id] = handle
             running.insert(game.id)
-            do { try process.run() } catch {
+            do { try process.run(); activity.start(game) } catch {
                 processes.removeValue(forKey: game.id)
                 running.remove(game.id)
                 try? logHandles.removeValue(forKey: game.id)?.close()
@@ -300,12 +327,20 @@ final class Library: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    private func checkNativeApps() {
+        for (id, app) in nativeApps where app.isTerminated {
+            if let game = data.games.first(where: { $0.id == id }) { activity.stop(game) }
+            running.remove(id); nativeApps.removeValue(forKey: id)
+        }
+        if nativeApps.isEmpty { nativeTimer?.invalidate(); nativeTimer = nil }
+    }
+
     func installSteam(_ game: Game, platform: InstallPlatform = .windows) {
         downloads.enqueue(game, platform: platform, accountID: data.steamAccount?.steamID)
         installSelection = nil
     }
     private func performInstall(_ job: DownloadJob) async throws {
-        while managedSteam.busy || signingIn {
+        while managedSteam.busy || signingIn || steamServices.busy {
             try Task.checkCancellation()
             try await Task.sleep(nanoseconds: 200_000_000)
         }
