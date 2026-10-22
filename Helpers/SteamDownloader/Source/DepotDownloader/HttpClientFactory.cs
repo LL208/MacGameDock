@@ -1,6 +1,7 @@
 // This file is subject to the terms and conditions defined
 // in file 'LICENSE', which is part of this source code package.
 
+using System;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -14,16 +15,17 @@ namespace DepotDownloader
     // We don't know if the IPv6 stack is functional.
     class HttpClientFactory
     {
-        public static HttpClient CreateHttpClient()
+        public static HttpClient CreateHttpClient() => CreateHttpClient(true);
+        public static HttpClient CreateHttpClient(bool redirects)
         {
             var client = new HttpClient(new SocketsHttpHandler
             {
-                ConnectCallback = IPv4ConnectAsync
+                ConnectCallback = IPv4ConnectAsync,
+                UseCookies = false,
+                AllowAutoRedirect = redirects
             });
-
             var assemblyVersion = typeof(HttpClientFactory).Assembly.GetName().Version.ToString(fieldCount: 3);
             client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DepotDownloader", assemblyVersion));
-
             return client;
         }
 

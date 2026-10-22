@@ -29,7 +29,11 @@ enum SteamResources {
         }
         // The generated SwiftPM accessor knows Xcode's build-products path.
         // Packaged apps resolve their included bundle without this build-path fallback.
+        #if SWIFT_PACKAGE
         if Bundle.main.bundleURL.pathExtension != "app" { roots.append(Bundle.module.bundleURL) }
+        #else
+        roots.append(Bundle.main.bundleURL)
+        #endif
         return try locate(bundleRoots: roots)
     }
 }

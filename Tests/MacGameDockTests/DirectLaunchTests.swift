@@ -19,6 +19,11 @@ final class DirectLaunchTests: XCTestCase {
         try Data("#!/bin/sh\nprintf 'GAME=%s\\nARG=%s\\n' \"$1\" \"$2\"\n".utf8).write(to: runtime)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runtime.path)
         let prefix = root.appendingPathComponent("Prefix")
+        for relative in WineRuntime.requiredFiles {
+            let file = prefix.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("fixture".utf8).write(to: file)
+        }
         let game = Game(id: UUID(), title: "Direct launch regression", store: .steam, executablePath: executable.path, addedAt: Date(), steamAppID: 123,
                         installDirectory: executable.deletingLastPathComponent().path,
                         managedLaunch: ManagedLaunch(prefix: prefix.path, arguments: ["--test"], workingDirectory: executable.deletingLastPathComponent().path, platform: .windows))
@@ -26,7 +31,10 @@ final class DirectLaunchTests: XCTestCase {
         try JSONEncoder().encode(data).write(to: root.appendingPathComponent("library.json"))
         let library = Library(runtimeResolver: { runtime.path })
         library.launch(game)
-        for _ in 0..<100 where library.running.contains(game.id) { try await Task.sleep(nanoseconds: 20_000_000) }
+        for _ in 0..<100 {
+            if !library.running.contains(game.id), !library.preparingLaunch.contains(game.id) { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         XCTAssertNil(library.error)
         XCTAssertNil(library.installSelection)
         XCTAssertNil(library.data.steamAccount)

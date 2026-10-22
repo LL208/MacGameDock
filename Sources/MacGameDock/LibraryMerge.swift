@@ -45,10 +45,15 @@ enum LibraryMerge {
             guard game.isInstalled || game.detectedByScan == true else { return nil }
             var local = game
             local.catalogOwner = nil
+            local.steamMinutes = nil; local.steamAchievementsUnlocked = nil; local.steamAchievementsTotal = nil
             return local
         }
         for item in owned {
             if let index = data.games.firstIndex(where: { $0.steamAppID == item.appid && $0.store == .steam }) {
+                let sameOwner = data.games[index].catalogOwner == owner
+                data.games[index].steamMinutes = item.steamMinutes ?? (sameOwner ? data.games[index].steamMinutes : nil)
+                data.games[index].steamAchievementsUnlocked = item.steamAchievementsUnlocked ?? (sameOwner ? data.games[index].steamAchievementsUnlocked : nil)
+                data.games[index].steamAchievementsTotal = item.steamAchievementsTotal ?? (sameOwner ? data.games[index].steamAchievementsTotal : nil)
                 data.games[index].catalogOwner = owner
                 data.games[index].platforms = item.platforms
                 data.games[index].familyOwners = item.familyOwners
@@ -56,7 +61,7 @@ enum LibraryMerge {
                 if let name = item.name, !name.isEmpty { data.games[index].title = name }
             } else {
                 data.games.append(Game(id: UUID(), title: item.name ?? "Gioco Steam \(item.appid)", store: .steam,
-                                       executablePath: "", addedAt: now, steamAppID: item.appid, catalogOwner: owner, platforms: item.platforms, familyOwners: item.familyOwners, iconHash: item.iconHash))
+                                       executablePath: "", addedAt: now, steamAppID: item.appid, catalogOwner: owner, platforms: item.platforms, familyOwners: item.familyOwners, steamMinutes: item.steamMinutes, steamAchievementsUnlocked: item.steamAchievementsUnlocked, steamAchievementsTotal: item.steamAchievementsTotal, iconHash: item.iconHash))
             }
         }
         data.steamLibrarySyncedAt = now
@@ -68,10 +73,14 @@ enum LibraryMerge {
         data.steamAccount = nil
         data.steamLibrarySyncedAt = nil
         data.games = data.games.compactMap { game in
-            guard game.catalogOwner != nil else { return game }
+            guard game.catalogOwner != nil else {
+                var local = game; local.steamMinutes = nil; local.steamAchievementsUnlocked = nil; local.steamAchievementsTotal = nil
+                return local
+            }
             guard game.isInstalled || game.detectedByScan == true else { return nil }
             var local = game
             local.catalogOwner = nil
+            local.steamMinutes = nil; local.steamAchievementsUnlocked = nil; local.steamAchievementsTotal = nil
             return local
         }
         return data

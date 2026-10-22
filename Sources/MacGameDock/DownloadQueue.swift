@@ -26,13 +26,14 @@ struct DownloadJob: Identifiable, Codable {
     var state: DownloadState
     var error: String?
     let createdAt: Date
+    var finishedAt: Date? = nil
 }
 @MainActor
 final class DownloadQueue: ObservableObject {
     @Published private(set) var jobs: [DownloadJob] = []
     @Published var storageError: String?
     private var worker: Task<Void, Never>?
-    private var activeID: UUID?
+    @Published private var activeID: UUID?
     private let file: URL
     private let runner: (DownloadJob) async throws -> Void
     private let interrupt: () -> Void
@@ -65,12 +66,22 @@ final class DownloadQueue: ObservableObject {
     }
     func resume(_ id: UUID) {
         guard let i = jobs.firstIndex(where: { $0.id == id }), [.paused, .failed, .cancelled].contains(jobs[i].state) else { return }
-        jobs[i].state = .queued; jobs[i].error = nil; persist(); start()
+        jobs[i].state = .queued; jobs[i].error = nil; jobs[i].finishedAt = nil; persist(); start()
     }
     func cancel(_ id: UUID) {
         guard let i = jobs.firstIndex(where: { $0.id == id }), jobs[i].state != .completed else { return }
-        jobs[i].state = .cancelled; persist()
+        jobs[i].state = .cancelled; jobs[i].finishedAt = Date(); jobs[i].error = nil; persist()
         if activeID == id { worker?.cancel(); interrupt() }
+    }
+    var pending: [DownloadJob] { jobs.filter { ![.completed, .cancelled].contains($0.state) } }
+    var history: [DownloadJob] { jobs.filter { [.completed, .cancelled].contains($0.state) }.sorted { ($0.finishedAt ?? $0.createdAt) > ($1.finishedAt ?? $1.createdAt) } }
+    func canRemove(_ id: UUID) -> Bool { activeID != id && jobs.contains { $0.id == id && [.completed, .cancelled, .failed, .paused].contains($0.state) } }
+    func remove(_ id: UUID) {
+        guard canRemove(id) else { return }
+        jobs.removeAll { $0.id == id }; persist()
+    }
+    func clearHistory() {
+        jobs.removeAll { [.completed, .cancelled].contains($0.state) && $0.id != activeID }; persist()
     }
     func prioritize(_ id: UUID) {
         guard let i = jobs.firstIndex(where: { $0.id == id }), jobs[i].state == .queued else { return }
@@ -92,7 +103,7 @@ final class DownloadQueue: ObservableObject {
                 jobs[index].state = .active; persist()
                 do {
                     try await runner(job)
-                    if let i = jobs.firstIndex(where: { $0.id == job.id }), jobs[i].state == .active { jobs[i].state = .completed }
+                    if let i = jobs.firstIndex(where: { $0.id == job.id }), jobs[i].state == .active { jobs[i].state = .completed; jobs[i].finishedAt = Date() }
                 } catch {
                     if let i = jobs.firstIndex(where: { $0.id == job.id }), jobs[i].state == .active {
                         jobs[i].state = error is CancellationError ? .paused : .failed

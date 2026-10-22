@@ -1,0 +1,9 @@
+{
+  "release": "release-2026_09_27",
+  "sourceCommit": "7103add",
+  "sourceURL": "https://github.com/Detanup01/gbe_fork/tree/release-2026_09_27",
+  "files": {
+    "x64/steam_api64.dll": "70d9826a402d3a78b0c07e9f7ea7c6832468a1113013f31ea570fccaa5445ea9",
+    "x86/steam_api.dll": "cae4372bceda997d6c73cebc1c14eb27d39b74a7999d8f28384bdfd8d746a79c"
+  }
+}

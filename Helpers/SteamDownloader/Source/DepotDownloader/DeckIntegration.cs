@@ -9,6 +9,8 @@ using SteamKit2;
 
 namespace DepotDownloader
 {
+    internal sealed class DeckCloudException(string code) : Exception { public string Code { get; } = code; }
+
     // MacGameDeck integration changes, 2026-10-12.
     internal static class DeckIntegration
     {
@@ -35,7 +37,7 @@ namespace DepotDownloader
             return true;
         }
 
-        public static void Metadata(uint appID, KeyValue common, KeyValue config, string installDirectory)
+        public static void Metadata(uint appID, KeyValue common, KeyValue config, string installDirectory, bool downloaded = true)
         {
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL"))) return;
             var launches = config?["launch"].Children.Select(entry => new {
@@ -47,7 +49,7 @@ namespace DepotDownloader
             var target = Path.Combine(installDirectory, ".MacGameDeck");
             Directory.CreateDirectory(target);
             File.WriteAllText(Path.Combine(target, "metadata.json"), JsonSerializer.Serialize(value));
-            Emit(new { type = "download_complete", appID });
+            if (downloaded) Emit(new { type = "download_complete", appID });
         }
     }
 }

@@ -7,6 +7,11 @@ struct SteamDependency {
     let arguments: [String]
     let marker: URL
     let redistGroup: String?
+    var isModernVisualCPP: Bool {
+        guard let group = redistGroup else { return false }
+        let parts = group.lowercased().split(separator: "/")
+        return parts.count == 3 && parts[1] == "vcredist" && (Int(parts[2]) ?? 0) >= 2015
+    }
     var isAvailable: Bool { FileManager.default.fileExists(atPath: executable.path) }
     var wineArguments: [String] {
         let path = Self.windowsPath(executable)
@@ -20,7 +25,7 @@ struct SteamDependency {
 }
 
 enum SteamDependencies {
-    static func plan(in directory: URL, allowMissing: Bool = false) throws -> [SteamDependency] {
+    static func plan(in directory: URL, allowMissing: Bool = false, prefix: URL? = nil) throws -> [SteamDependency] {
         guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return [] }
         let files = enumerator.compactMap { $0 as? URL }.filter { $0.lastPathComponent.lowercased().contains("installscript") && $0.pathExtension.lowercased() == "vdf" }.sorted { $0.path < $1.path }
         var steps: [SteamDependency] = []
@@ -66,7 +71,7 @@ enum SteamDependencies {
                     let group = components.count >= 4 && components[0].lowercased() == "_commonredist" ? components.prefix(3).joined(separator: "/") : nil
                     let label = group.map { $0.split(separator: "/").dropFirst().joined(separator: " ") + " · " + name } ?? name
                     let digest = SHA256.hash(data: bytes + Data((name + key).utf8)).map { String(format: "%02x", $0) }.joined()
-                    let marker = directory.appendingPathComponent(".MacGameDeck/dependencies/" + digest)
+                    let marker = (prefix ?? directory).appendingPathComponent(".MacGameDeck/dependencies/" + digest)
                     if !FileManager.default.fileExists(atPath: marker.path) {
                         if !allowMissing && !FileManager.default.fileExists(atPath: executable.path) { throw DockError.message("Installer di \(label) mancante: recupero automatico necessario.") }
                         steps.append(SteamDependency(name: label, executable: executable, arguments: args, marker: marker, redistGroup: group))

@@ -6,6 +6,9 @@ struct SteamOwnedGame: Decodable {
     let name: String?
     var platforms: [String]? = nil
     var familyOwners: [String]? = nil
+    var steamMinutes: Int? = nil
+    var steamAchievementsUnlocked: Int? = nil
+    var steamAchievementsTotal: Int? = nil
     var iconHash: String? = nil
 }
 

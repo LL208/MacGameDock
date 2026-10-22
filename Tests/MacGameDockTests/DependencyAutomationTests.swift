@@ -75,8 +75,8 @@ final class DependencyAutomationTests: XCTestCase {
         let root = try directory(), id = "123"
         let prefix = root.appendingPathComponent("Containers/Steam/" + id + "/prefix")
         let gameDirectory = prefix.appendingPathComponent("drive_c/Program Files/MacGameDeck/Games/" + id)
-        let redist = gameDirectory.appendingPathComponent("_CommonRedist/vcredist/2022")
-        try script("%INSTALLDIR%\\_CommonRedist\\vcredist\\2022\\VC_redist.x64.exe", command: "/quiet /norestart", at: redist)
+        let redist = gameDirectory.appendingPathComponent("_CommonRedist/vcredist/2013")
+        try script("%INSTALLDIR%\\_CommonRedist\\vcredist\\2013\\VC_redist.x64.exe", command: "/quiet /norestart", at: redist)
         try Data().write(to: gameDirectory.appendingPathComponent("game.exe"))
         let metadata = gameDirectory.appendingPathComponent(".MacGameDeck")
         try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
@@ -96,8 +96,8 @@ final class DependencyAutomationTests: XCTestCase {
         test -s account.config || exit 7
         if [ "$app" = "228980" ]; then
           test -s "$list" || exit 8
-          mkdir -p "$dir/vcredist/2022"
-          printf 'fixture' > "$dir/vcredist/2022/VC_redist.x64.exe"
+          mkdir -p "$dir/vcredist/2013"
+          printf 'fixture' > "$dir/vcredist/2013/VC_redist.x64.exe"
         fi
         printf '%s\n' 'MACGAMEDECK_EVENT:{"type":"account","steamID":"76561198000000000","username":"fixture"}'
         """#
@@ -125,14 +125,14 @@ final class DependencyAutomationTests: XCTestCase {
             _ = try await managed.install(game, runtime: runtime.path, expected: "76561198000000000")
             XCTFail("Installer failure must not become a completed installation")
         } catch { XCTAssertTrue(error.localizedDescription.contains("vcredist")) }
-        XCTAssertEqual(try SteamDependencies.plan(in: gameDirectory).count, 1)
+        XCTAssertEqual(try SteamDependencies.plan(in: gameDirectory, prefix: prefix).count, 1)
         try FileManager.default.removeItem(at: failing)
         _ = try await managed.install(game, runtime: runtime.path, expected: "76561198000000000")
-        XCTAssertTrue(try SteamDependencies.plan(in: gameDirectory).isEmpty)
+        XCTAssertTrue(try SteamDependencies.plan(in: gameDirectory, prefix: prefix).isEmpty)
         let installed = try String(contentsOf: prefix.appendingPathComponent("installed"), encoding: .utf8)
         XCTAssertTrue(installed.contains("VC_redist.x64.exe"))
         XCTAssertTrue(installed.contains("/quiet\n/norestart"))
-        XCTAssertTrue(installed.contains("_CommonRedist/vcredist/2022"))
+        XCTAssertTrue(installed.contains("_CommonRedist/vcredist/2013"))
         _ = try await managed.install(game, runtime: runtime.path, expected: "76561198000000000")
         XCTAssertEqual(try String(contentsOf: prefix.appendingPathComponent("installed"), encoding: .utf8), installed)
     }

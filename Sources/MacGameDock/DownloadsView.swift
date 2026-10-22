@@ -19,57 +19,71 @@ struct DownloadsView: View {
     @EnvironmentObject var library: Library
     @EnvironmentObject var queue: DownloadQueue
     @EnvironmentObject var steam: ManagedSteam
+    private var active: DownloadJob? { queue.pending.first { $0.state == .active } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 22) {
             HStack {
-                Text("Download").font(.largeTitle.bold())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Download").font(.largeTitle.bold())
+                    Text("\(queue.pending.count) in gestione · \(queue.history.count) nella cronologia").foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Pausa coda") { queue.pauseAll() }
-                    .disabled(!queue.jobs.contains(where: { [.queued, .active].contains($0.state) }))
-                Button("Riprendi coda") { queue.resumeAll() }
-                    .disabled(!queue.jobs.contains(where: { $0.state == .paused }) || queue.storageError != nil)
+                Button("Pausa tutto", systemImage: "pause.fill") { queue.pauseAll() }.disabled(!queue.pending.contains { [.active, .queued].contains($0.state) })
+                Button("Riprendi", systemImage: "play.fill") { queue.resumeAll() }.disabled(!queue.pending.contains { $0.state == .paused } || queue.storageError != nil)
             }
-            Text("Pausa e ripresa conservano i file scaricati. Dopo la riapertura premi Riprendi per continuare.")
-                .foregroundStyle(.secondary)
             if let error = queue.storageError { Text(error).foregroundStyle(.orange) }
-            if queue.jobs.isEmpty {
-                Label("Nessun download in coda", systemImage: "arrow.down.circle").foregroundStyle(.secondary)
-            }
             ScrollView {
-                LazyVStack(spacing: 14) {
-                    ForEach(queue.jobs) { job in
-                        HStack(alignment: .top, spacing: 16) {
-                            GameArtwork(game: job.game).frame(width: 72, height: 72)
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(job.game.title).font(.headline)
-                                Text("\(job.platform.label) · \(job.state.label)").font(.caption).foregroundStyle(.secondary)
-                                if job.state == .active && steam.activeGame == job.game.id {
-                                    ProgressView(value: steam.progress)
-                                    Text(steam.message).font(.caption)
-                                    if steam.bytesPerSecond > 0 {
-                                        let remaining = max(0, steam.totalBytes - steam.downloadedBytes) / steam.bytesPerSecond
-                                        Text(String(format: "%.1f MB/s · circa %.0f min rimanenti", steam.bytesPerSecond / 1_048_576, remaining / 60))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                if let error = job.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                            VStack(alignment: .trailing, spacing: 8) {
-                                if [.active, .queued].contains(job.state) {
-                                    Button("Pausa", systemImage: "pause.fill") { queue.pause(job.id) }
-                                    Button("Annulla", role: .destructive) { queue.cancel(job.id) }
-                                }
-                                if [.paused, .failed, .cancelled].contains(job.state) {
-                                    Button("Riprendi", systemImage: "play.fill") { queue.resume(job.id) }
-                                }
-                                if job.state == .failed { Button("Apri log") { library.openLog(job.game) } }
-                                if job.state == .queued { Button("Scarica prima") { queue.prioritize(job.id) } }
-                            }
-                        }.padding(16).background(Color.white.opacity(0.04)).cornerRadius(14)
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    if let active {
+                        downloadRow(active, featured: true)
+                    } else {
+                        Label("Nessun download in corso", systemImage: "checkmark.circle").font(.title3).padding(22).frame(maxWidth: .infinity, alignment: .leading).background(Color.mint.opacity(0.07)).cornerRadius(14)
+                    }
+                    Text("IN CODA E INTERROTTI").font(.caption.bold()).foregroundStyle(.secondary)
+                    ForEach(queue.pending.filter { $0.state != .active }) { downloadRow($0) }
+                    if queue.pending.isEmpty { Text("Scegli un gioco dalla libreria per installarlo.").foregroundStyle(.secondary) }
+                    Divider().padding(.vertical, 8)
+                    HStack {
+                        Text("CRONOLOGIA").font(.caption.bold()).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Svuota cronologia") { queue.clearHistory() }.disabled(queue.history.isEmpty)
+                    }
+                    ForEach(queue.history) { downloadRow($0) }
+                    if queue.history.isEmpty { Text("I download conclusi appariranno qui.").foregroundStyle(.secondary) }
+                }.padding(.bottom, 20)
+            }
+            Text("Pausa e annullamento conservano i file già scaricati. Rimuovere una voce dalla cronologia non disinstalla il gioco.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func downloadRow(_ job: DownloadJob, featured: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 18) {
+            GameArtwork(game: job.game).frame(width: featured ? 160 : 84, height: featured ? 100 : 62)
+            VStack(alignment: .leading, spacing: 9) {
+                Text(job.game.title).font(featured ? .title2.bold() : .headline)
+                Text("\(job.platform.label) · \(job.state.label)").font(.caption).foregroundStyle(.secondary)
+                if job.state == .active && steam.activeGame == job.game.id {
+                    ProgressView(value: steam.progress).tint(.mint)
+                    HStack {
+                        Text(steam.message).lineLimit(2)
+                        Spacer()
+                        if steam.totalBytes > 0 { Text("\(ByteCountFormatter.string(fromByteCount: Int64(steam.downloadedBytes), countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: Int64(steam.totalBytes), countStyle: .file))") }
+                    }.font(.caption)
+                    if steam.bytesPerSecond > 0 {
+                        Text(String(format: "%.1f MB/s · circa %.0f min rimanenti", steam.bytesPerSecond / 1_048_576, max(0, steam.totalBytes - steam.downloadedBytes) / steam.bytesPerSecond / 60)).font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if let date = job.finishedAt { Text(date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary) }
+                if let error = job.error { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 8) {
+                if [.active, .queued].contains(job.state) { Button("Pausa", systemImage: "pause.fill") { queue.pause(job.id) } }
+                if [.active, .queued, .paused, .failed].contains(job.state) { Button("Annulla", role: .destructive) { queue.cancel(job.id) } }
+                if [.paused, .failed].contains(job.state) { Button("Riprendi", systemImage: "play.fill") { queue.resume(job.id) } }
+                if job.state == .queued { Button("Scarica prima") { queue.prioritize(job.id) } }
+                if job.state == .failed { Button("Apri log") { library.openLog(job.game) } }
+                if [.completed, .cancelled, .failed].contains(job.state) { Button("Rimuovi dalla lista", systemImage: "xmark") { queue.remove(job.id) }.disabled(!queue.canRemove(job.id)) }
             }
-        }
+        }.padding(featured ? 22 : 16).background(featured ? Color.mint.opacity(0.08) : Color.white.opacity(0.04)).cornerRadius(14)
     }
 }
 struct GameDetailsView: View {

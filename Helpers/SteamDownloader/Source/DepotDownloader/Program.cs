@@ -167,11 +167,63 @@ namespace DepotDownloader
                 catch (Exception) { Console.WriteLine("Unable to load the authenticated Steam library."); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
+            var serviceDirectory = GetParameter<string>(args, "-deck-service");
+            if (serviceDirectory != null)
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                try { await ContentDownloader.RunDeckService(serviceDirectory, GetParameter<int>(args, "-deck-parentpid", 0)); return 0; }
+                finally { ContentDownloader.ShutdownSteam3(); }
+            }
             var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);
             if (appId == ContentDownloader.INVALID_APP_ID)
             {
                 Console.WriteLine("Error: -app not specified!");
                 return 1;
+            }
+
+            var launchMetadata = GetParameter<string>(args, "-deck-launch-metadata");
+            if (launchMetadata != null)
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                try { await ContentDownloader.ExportDeckLaunchMetadata(appId, launchMetadata); return 0; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = "engine_error", errorType = error.GetType().Name }); return 1; }
+                finally { ContentDownloader.ShutdownSteam3(); }
+            }
+            var achievementsFile = GetParameter<string>(args, "-deck-achievements");
+            var workshopFile = GetParameter<string>(args, "-deck-workshop");
+            if (achievementsFile != null || workshopFile != null)
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                try {
+                    if (achievementsFile != null) await ContentDownloader.ExportDeckAchievements(appId, achievementsFile);
+                    else await ContentDownloader.ExportDeckWorkshop(appId, workshopFile, GetParameter<string>(args, "-deck-search"), GetParameter<uint>(args, "-deck-page", 1));
+                    return 0;
+                }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                finally { ContentDownloader.ShutdownSteam3(); }
+            }
+            var cloudRequest = GetParameter<string>(args, "-deck-cloud-download");
+            var cloudDirectory = GetParameter<string>(args, "-deck-cloud-directory");
+            var playerFile = GetParameter<string>(args, "-deck-player");
+            if (cloudRequest != null || playerFile != null)
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                try {
+                    if (playerFile != null) await ContentDownloader.ExportDeckPlayer(appId, playerFile);
+                    else { if (cloudDirectory == null) throw new DeckCloudException("invalid_request"); await ContentDownloader.DownloadDeckCloud(appId, cloudRequest, cloudDirectory); }
+                    return 0;
+                }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                finally { ContentDownloader.ShutdownSteam3(); }
+            }
+
+            var cloudInventory = GetParameter<string>(args, "-deck-cloud-inventory");
+            if (cloudInventory != null)
+            {
+                if (!InitializeSteam(username, password)) return 1;
+                try { await ContentDownloader.ExportDeckCloudInventory(appId, cloudInventory); return 0; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                finally { ContentDownloader.ShutdownSteam3(); }
             }
 
             var pubFile = GetParameter(args, "-pubfile", ContentDownloader.INVALID_MANIFEST_ID);

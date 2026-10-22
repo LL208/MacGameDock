@@ -68,13 +68,32 @@ struct InstalledGamesScanner {
                     let common = steamApps.appendingPathComponent("common")
                     let location = try safeChild(relative, in: common)
                     guard fileManager.fileExists(atPath: location.path) else { continue }
-                    result.games.append(Game(id: UUID(), title: name, store: .steam, executablePath: "", addedAt: Date(),
+                    let app = nativeApplication(in: location)
+                    result.games.append(Game(id: UUID(), title: name, store: .steam, executablePath: app?.path ?? "", addedAt: Date(),
                                              steamAppID: id, installDirectory: location.path,
-                                             launchURL: "steam://rungameid/\(id)", detectedByScan: true))
+                                             launchURL: app == nil ? "steam://rungameid/\(id)" : nil, detectedByScan: true))
                 } catch { complete = false; result.warnings.append(error.localizedDescription) }
             }
             if complete { result.completedSteamApps.insert(steamApps.standardizedFileURL.path) }
         } catch { result.warnings.append("Impossibile leggere \(steamApps.path): \(error.localizedDescription)") }
+    }
+
+    // Select only an unambiguous valid app bundle; never pick an arbitrary helper executable.
+    func nativeApplication(in directory: URL) -> URL? {
+        guard let files = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return nil }
+        var apps: [URL] = []
+        for case let file as URL in files {
+            if (try? file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true { files.skipDescendants(); continue }
+            guard file.pathExtension.lowercased() == "app" else { continue }
+            files.skipDescendants()
+            guard let data = try? Data(contentsOf: file.appendingPathComponent("Contents/Info.plist")),
+                  let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                  let executable = info["CFBundleExecutable"] as? String,
+                  !executable.contains("/"), executable != "..",
+                  fileManager.isExecutableFile(atPath: file.appendingPathComponent("Contents/MacOS/" + executable).path) else { continue }
+            apps.append(file)
+        }
+        return apps.count == 1 ? apps[0] : nil
     }
 
     func scanEpic(_ root: URL, into result: inout ScanResult) {

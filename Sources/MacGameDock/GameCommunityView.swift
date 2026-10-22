@@ -1,28 +1,5 @@
 import AppKit
 import SwiftUI
-import WebKit
-
-struct SteamCommunityPage: NSViewRepresentable {
-    let url: URL
-    func makeNSView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        view.navigationDelegate = context.coordinator
-        view.load(URLRequest(url: url))
-        return view
-    }
-    func updateNSView(_ view: WKWebView, context: Context) {}
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            guard let url = action.request.url, url.scheme == "https", let host = url.host,
-                  host == "steamcommunity.com" || host.hasSuffix(".steamcommunity.com") || host == "store.steampowered.com" else { decisionHandler(.cancel); return }
-            decisionHandler(.allow)
-        }
-    }
-}
-
 enum WorkshopInput {
     static func itemID(_ input: String) throws -> String {
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,8 +32,24 @@ struct GameCommunityView: View {
     let game: Game
     @EnvironmentObject var library: Library
     @EnvironmentObject var steam: ManagedSteam
+    @EnvironmentObject var social: SteamSocial
+    @EnvironmentObject var monitor: AchievementMonitor
     @Environment(\.dismiss) private var dismiss
     @State private var tab = "Workshop"
+    @State private var inventory: SteamCloudInventory?
+    @State private var checkingCloud = false
+    @State private var cloudMessage = ""
+    @State private var player: SteamPlayerSnapshot?
+    @State private var playerMessage = ""
+    @State private var achievementData: SteamAchievementSnapshot?
+    @State private var achievementFilter = "Tutti"
+    @State private var workshopItems: [SteamWorkshopItem] = []
+    @State private var workshopSearch = ""
+    @State private var workshopPage = 0
+    @State private var workshopTotal = 0
+    @State private var loadingWorkshop = false
+    @State private var workshopMessage = ""
+    @State private var localSaves: [String: URL] = [:]
     @State private var input = ""
     @State private var downloading = false
     @State private var ownsSteamOperation = false
@@ -66,29 +59,153 @@ struct GameCommunityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack { Text(game.title).font(.title2.bold()); Spacer(); Button("Chiudi") { dismiss() } }
-            Picker("Sezione", selection: $tab) { Text("Workshop e mod").tag("Workshop"); Text("Trofei Steam").tag("Trofei") }.pickerStyle(.segmented)
+            Picker("Sezione", selection: $tab) { Text("Workshop e mod").tag("Workshop"); Text("Trofei Steam").tag("Trofei"); Text("Steam Cloud").tag("Cloud") }.pickerStyle(.segmented)
             if let id = game.steamAppID {
                 if tab == "Workshop" {
-                    Text("Sfoglia il Workshop e incolla il link della mod. Il download non crea un'iscrizione Steam. Il gioco deve supportare le mod e il loro formato.").font(.caption).foregroundStyle(.secondary)
                     HStack {
-                        TextField("Link o ID Workshop", text: $input).textFieldStyle(.roundedBorder)
-                        Button("Scarica mod") { download(id) }.disabled(downloading || steam.busy || library.signingIn || library.syncingSteam || library.running.contains(game.id))
+                        TextField("Cerca mod nel Workshop", text: $workshopSearch).textFieldStyle(.roundedBorder).onSubmit { Task { await loadWorkshop(reset: true) } }
+                        Button("Cerca", systemImage: "magnifyingglass") { Task { await loadWorkshop(reset: true) } }.disabled(loadingWorkshop)
+                    }
+                    if !workshopMessage.isEmpty { Text(workshopMessage).font(.caption).foregroundStyle(.secondary) }
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 230))], spacing: 16) {
+                            ForEach(workshopItems) { item in
+                                VStack(alignment: .leading, spacing: 10) {
+                                    AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() } placeholder: { Color.indigo.opacity(0.25).overlay(Image(systemName: "puzzlepiece.extension")) }.frame(height: 120).clipped().cornerRadius(10)
+                                    Text(item.title).font(.headline).lineLimit(2)
+                                    Text(item.description ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                    HStack {
+                                        Label("\(item.subscriptions)", systemImage: "person.2").font(.caption2).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("Scarica", systemImage: "arrow.down.circle") { input = item.id; download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
+                                    }
+                                }.padding(14).background(Color.white.opacity(0.04)).cornerRadius(14)
+                            }
+                        }
+                        if workshopItems.count < workshopTotal { Button("Carica altre mod") { Task { await loadWorkshop(reset: false) } }.disabled(loadingWorkshop) }
+                        if loadingWorkshop { ProgressView("Caricamento mod…").padding() }
+                        if workshopItems.isEmpty && !loadingWorkshop { ContentUnavailableViewCompat(title: "Nessuna mod trovata", icon: "puzzlepiece.extension", detail: "Il gioco potrebbe non avere un Workshop oppure la ricerca non ha restituito risultati.") }
+                    }
+                    HStack {
+                        TextField("Oppure incolla un link o ID della mod", text: $input).textFieldStyle(.roundedBorder)
+                        Button("Scarica mod") { download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
                         if downloading { Button("Annulla") { task?.cancel(); if ownsSteamOperation { steam.cancel() } } }
                     }
-                    if let folder = downloaded {
-                        HStack { Button("Mostra download") { NSWorkspace.shared.open(folder) }; Button("Installa in cartella mod…") { installMod(folder) }.disabled(library.running.contains(game.id)) }
-                    }
+                    if let folder = downloaded { HStack { Button("Mostra download") { NSWorkspace.shared.open(folder) }; Button("Installa in cartella mod…") { installMod(folder) }.disabled(library.running.contains(game.id)) } }
                     if !message.isEmpty { Text(message).font(.caption).textSelection(.enabled) }
-                    SteamCommunityPage(url: URL(string: "https://steamcommunity.com/app/\(id)/workshop/")!).id("workshop-\(id)")
+                } else if tab == "Cloud" {
+                    Text("I salvataggi Auto-Cloud supportati vengono confrontati prima dell’avvio: la copia più recente ha priorità. I file locali sostituiti sono conservati in un backup. Questa pagina mostra anche i file Steam API, il cui ripristino diretto non è ancora supportato.").foregroundStyle(.secondary)
+                    Button(checkingCloud ? "Caricamento…" : "Aggiorna elenco") { checkCloud() }
+                        .disabled(checkingCloud || steam.busy || steam.preparing || library.signingIn || library.syncingSteam || library.running.contains(game.id))
+                    if !cloudMessage.isEmpty { Text(cloudMessage).font(.caption).textSelection(.enabled) }
+                    if let inventory {
+                        Text("\(inventory.liveFiles.count) file nel cloud").font(.headline)
+                        ScrollView {
+                            LazyVStack(spacing: 10) {
+                                ForEach(Array(inventory.liveFiles.enumerated()), id: \.offset) { entry in
+                                    HStack(spacing: 14) {
+                                        Image(systemName: "doc.fill").font(.title2).foregroundStyle(.mint).frame(width: 35)
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(entry.element.name).font(.headline).textSelection(.enabled)
+                                            Text("\(ByteCountFormatter.string(fromByteCount: Int64(entry.element.size), countStyle: .file)) · \(Date(timeIntervalSince1970: TimeInterval(entry.element.timestamp)).formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        if let path = localSaves[entry.element.name] {
+                                            Label(FileManager.default.fileExists(atPath: path.path) ? "Anche su questo Mac" : "Nel cloud", systemImage: "icloud").font(.caption).foregroundStyle(.secondary)
+                                            Button("Mostra locale") { NSWorkspace.shared.activateFileViewerSelecting([path]) }.disabled(!FileManager.default.fileExists(atPath: path.path))
+                                        } else { Text("Steam API").font(.caption).foregroundStyle(.secondary) }
+                                    }.padding(14).background(Color.white.opacity(0.04)).cornerRadius(12)
+                                }
+                            }
+                        }
+                    }
+                    Spacer()
                 } else {
-                    Text("Questa pagina mostra i trofei pubblicati da Steam; i profili privati possono richiedere accesso web separato. MacGameDeck avvia direttamente i giochi e non sincronizza trofei o ore con Steam.").font(.callout).foregroundStyle(.secondary)
-                    if let owner = library.data.steamAccount?.steamID {
-                        SteamCommunityPage(url: URL(string: "https://steamcommunity.com/profiles/\(owner)/stats/\(id)/?tab=achievements")!).id("trophies-\(id)-\(owner)")
-                    } else { Text("Collega l'account Steam per visualizzare i suoi trofei.") }
+                    if let player {
+                        HStack {
+                            if let minutes = player.minutes { Label(String(format: "%.1f ore su Steam", Double(minutes) / 60), systemImage: "clock") }
+                            if let unlocked = player.unlocked, let total = player.total { Label("\(unlocked) / \(total) trofei su Steam", systemImage: "trophy") }
+                        }.font(.headline)
+                    }
+                    if !playerMessage.isEmpty { Text(playerMessage).font(.caption).foregroundStyle(.secondary) }
+                    Text("Dati dell’account letti da Steam. Le ore locali sono conteggiate separatamente. I nuovi sblocchi dei giochi Windows compatibili vengono rilevati durante la partita e confermati da Steam.").font(.caption).foregroundStyle(.secondary)
+                    if let snapshot = achievementData {
+                        HStack {
+                            ProgressView(value: Double(snapshot.achievements.filter(\.unlocked).count), total: Double(max(1, snapshot.achievements.count)))
+                            Picker("Mostra", selection: $achievementFilter) { Text("Tutti").tag("Tutti"); Text("Ottenuti").tag("Ottenuti"); Text("Da ottenere").tag("Da ottenere") }.pickerStyle(.segmented).frame(width: 300)
+                        }
+                        ScrollView {
+                            LazyVStack(spacing: 10) {
+                                ForEach(snapshot.achievements.filter { achievementFilter == "Tutti" || (achievementFilter == "Ottenuti" ? $0.unlocked : !$0.unlocked) }) { achievement in
+                                    SteamAchievementRow(achievement: achievement)
+                                }
+                            }
+                        }
+                        if snapshot.achievements.isEmpty { ContentUnavailableViewCompat(title: "Nessun trofeo disponibile", icon: "trophy", detail: "Steam non ha restituito trofei per questo gioco.") }
+                    } else { Spacer() }
+
                 }
             }
         }.padding(24).frame(minWidth: 850, minHeight: 640)
+        .task(id: tab + (library.data.steamAccount?.steamID ?? "")) {
+            guard library.data.steamAccount != nil else { return }
+            do {
+                while steam.busy || steam.preparing || library.signingIn || library.syncingSteam { try await Task.sleep(nanoseconds: 200_000_000) }
+                try Task.checkCancellation()
+                if tab == "Cloud" { await loadCloud() }
+                else if tab == "Trofei" { await loadPlayer() }
+                else { await loadWorkshop(reset: true) }
+            } catch {}
+        }
+        .onReceive(monitor.$snapshots) { snapshots in
+            if let id = game.steamAppID, let snapshot = snapshots[id], snapshot.steamID == library.data.steamAccount?.steamID { achievementData = snapshot }
+        }
         .onDisappear { if downloading { task?.cancel(); if ownsSteamOperation { steam.cancel() } } }
+    }
+    private func checkCloud() { Task { await loadCloud() } }
+    @MainActor private func loadCloud() async {
+        guard !checkingCloud else { return }
+        guard let account = library.data.steamAccount?.steamID else { cloudMessage = "Collega l'account Steam per visualizzare il cloud."; return }
+        checkingCloud = true; inventory = nil; cloudMessage = "Caricamento dei salvataggi da Steam…"
+        defer { checkingCloud = false }
+        do {
+            let response = try await steam.cloudInventory(game, expected: account)
+            guard library.data.steamAccount?.steamID == account else { return }
+            inventory = response; localSaves = [:]
+            for file in response.liveFiles {
+                let prefix = response.prefixes.isEmpty ? "" : response.prefixes[file.prefixIndex]
+                let name = prefix + (prefix.isEmpty || prefix.hasSuffix("/") || prefix.hasSuffix("%") ? "" : "/") + file.name
+                localSaves[file.name] = try? SteamCloudRestore.destination(name, game: game, inventory: response)
+            }
+            cloudMessage = inventory?.liveFiles.isEmpty == true ? "Nessun salvataggio presente nel cloud di questo account." : "Elenco aggiornato da Steam."
+        } catch { cloudMessage = error.localizedDescription }
+    }
+    @MainActor private func loadPlayer() async {
+        guard let account = library.data.steamAccount?.steamID else { return }
+        player = nil; achievementData = nil; playerMessage = "Caricamento di ore e trofei dell’account Steam…"
+        do {
+            let snapshot = try await steam.playerSnapshot(game, expected: account)
+            guard library.data.steamAccount?.steamID == account else { return }
+            try library.updateSteamSnapshot(snapshot)
+            player = snapshot
+            if let id = game.steamAppID {
+                achievementData = social.connected ? try await social.achievements(id) : try await steam.achievements(game, expected: account)
+            }
+            playerMessage = snapshot.minutes == nil && snapshot.unlocked == nil ? "Steam non ha restituito statistiche per questo gioco; il dato non viene mostrato come zero." : "Dati aggiornati da Steam."
+        } catch { playerMessage = error.localizedDescription }
+    }
+    @MainActor private func loadWorkshop(reset: Bool) async {
+        guard !loadingWorkshop, let owner = library.data.steamAccount?.steamID else { return }
+        loadingWorkshop = true; defer { loadingWorkshop = false }
+        let next = reset ? 1 : workshopPage + 1
+        do {
+            while steam.busy || steam.preparing { try await Task.sleep(nanoseconds: 200_000_000) }
+            let page = try await steam.workshop(game, expected: owner, search: workshopSearch, page: next)
+            guard library.data.steamAccount?.steamID == owner else { return }
+            if reset { workshopItems = [] }
+            let known = Set(workshopItems.map(\.id)); workshopItems.append(contentsOf: page.items.filter { !known.contains($0.id) })
+            workshopPage = page.page; workshopTotal = page.total; workshopMessage = "\(page.total) mod disponibili"
+        } catch { workshopMessage = error.localizedDescription }
     }
     private func download(_ appID: Int) {
         downloading = true; downloaded = nil; message = "Verifica della mod…"
@@ -136,5 +253,25 @@ struct GameCommunityView: View {
             try FileManager.default.copyItem(at: source, to: destination)
             message = "File copiati in \(destination.path). Segui le istruzioni della mod per l'attivazione."
         } catch { message = error.localizedDescription }
+    }
+}
+
+struct ContentUnavailableViewCompat: View {
+    let title: String
+    let icon: String
+    let detail: String
+    var body: some View { VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 40)).foregroundStyle(.secondary); Text(title).font(.title3.bold()); Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center) }.padding(30).frame(maxWidth: .infinity) }
+}
+struct SteamAchievementRow: View {
+    let achievement: SteamAchievement
+    var body: some View {
+        HStack(spacing: 16) {
+            AsyncImage(url: achievement.imageURL) { image in image.resizable().scaledToFit() } placeholder: { Image(systemName: achievement.unlocked ? "trophy.fill" : "lock.fill").font(.title).foregroundStyle(achievement.unlocked ? Color.yellow : Color.secondary) }.frame(width: 55, height: 55).cornerRadius(9)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(achievement.displayTitle).font(.headline)
+                Text(achievement.displayDescription).font(.callout).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if achievement.unlocked { VStack(alignment: .trailing) { Label("Ottenuto", systemImage: "checkmark.circle.fill").foregroundStyle(.mint); Text(Date(timeIntervalSince1970: Double(achievement.unlockTime)).formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary) }.font(.caption) }
+        }.padding(14).background(Color.white.opacity(achievement.unlocked ? 0.065 : 0.03)).cornerRadius(12).opacity(achievement.unlocked ? 1 : 0.8)
     }
 }

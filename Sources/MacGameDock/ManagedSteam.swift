@@ -83,7 +83,7 @@ struct DeckMetadata: Decodable {
                 if let index = components.firstIndex(where: { $0.lowercased().hasSuffix(".app") }) {
                     selected = try Self.contained(components[...index].joined(separator: "/"), in: directory)
                 } else {
-                    guard FileManager.default.isExecutableFile(atPath: exe.path) else { continue }
+                    guard !["exe", "dll", "bat", "cmd"].contains(exe.pathExtension.lowercased()), FileManager.default.isExecutableFile(atPath: exe.path) else { continue }
                 }
             }
             let args = try WindowsArguments.parse(option.arguments ?? "")
@@ -117,9 +117,7 @@ enum WindowsArguments {
 }
 enum WineRuntime {
     static func detect() -> String? {
-        let candidates = ["/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/lib/wine/x86_64-unix/wine",
-            "/Applications/Wine Stable.app/Contents/Resources/wine/bin/wine64", "/opt/homebrew/bin/wine64"]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+        nil // The application provisions its own engine; external apps are never required.
     }
     static let requiredFiles = ["system.reg", "user.reg", "drive_c/windows/system32/kernel32.dll"]
     static func missingFiles(prefix: URL) -> [String] {
@@ -143,19 +141,36 @@ enum WineRuntime {
             try await Task.sleep(nanoseconds: pollInterval)
         }
     }
-    static func environment(prefix: URL, runtime: String) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
-        env["WINEPREFIX"] = prefix.path; env["WINEDEBUG"] = "-all"
+    static func environment(prefix: URL, runtime: String, directX12: Bool = false, base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = base
+        env["WINEPREFIX"] = prefix.path; env["WINEDEBUG"] = "-all,err+all"
         if let range = runtime.range(of: "/lib/wine/x86_64-unix/wine") {
             let cx = String(runtime[..<range.lowerBound])
             env["CX_ROOT"] = cx; env["WINESERVER"] = cx + "/bin/wineserver"
+            if env["ROSETTA_ADVERTISE_AVX"] == nil { env["ROSETTA_ADVERTISE_AVX"] = "1" }
+            if env["ROSETTA_ADVERTISE_AVX"] == "0" || env["ROSETTA_ADVERTISE_AVX"] == "" { env.removeValue(forKey: "ROSETTA_ADVERTISE_AVX") }
+            env["DOTNET_EnableWriteXorExecute"] = "0"
+            let loader = cx + "/bin/wineloader"
+            if FileManager.default.isExecutableFile(atPath: loader) { env["WINELOADER"] = loader; env["CX_WINELOADER"] = loader }
+            let gptk = cx + "/lib64/apple_gptk"
+            let shared = gptk + "/external/libd3dshared.dylib"
+            if FileManager.default.fileExists(atPath: shared) { env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = shared }
+            var paths = [cx + "/lib/wine/x86_64-windows", cx + "/lib/wine/i386-windows", cx + "/lib/wine"]
+            if directX12, ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 14,
+               FileManager.default.fileExists(atPath: gptk + "/wine/x86_64-windows/d3d12.dll"),
+               FileManager.default.fileExists(atPath: shared) {
+                paths.insert(contentsOf: [gptk + "/wine/x86_64-windows", gptk + "/wine"], at: 0)
+                env["WINEDLLOVERRIDES"] = [env["WINEDLLOVERRIDES"], "d3d11,d3d12,dxgi=b"].compactMap { $0 }.joined(separator: ";")
+                env["DYLD_FALLBACK_LIBRARY_PATH"] = [gptk + "/external", env["DYLD_FALLBACK_LIBRARY_PATH"]].compactMap { $0 }.joined(separator: ":")
+            }
+            env["WINEDLLPATH"] = (paths + [env["WINEDLLPATH"]].compactMap { $0 }).joined(separator: ":")
         }
         return env
     }
 }
 
 // Bounded diagnostics for Wine only; Steam authentication output remains discarded.
-private final class WineOutputTail: @unchecked Sendable {
+final class WineOutputTail: @unchecked Sendable {
     private let lock = NSLock()
     private var bytes = Data()
     func append(_ value: Data) {
@@ -178,7 +193,7 @@ private final class LineSink: @unchecked Sendable {
     init(event: @escaping @Sendable (Data) -> Void) { self.event = event }
     func finalEvents() -> [Data] {
         lock.lock(); defer { lock.unlock() }
-        return ["qr", "account", "account_mismatch", "library_progress", "download_progress", "download_complete"].compactMap { latest[$0] }
+        return ["qr", "account", "account_mismatch", "library_progress", "download_progress", "download_complete", "cloud_error"].compactMap { latest[$0] }
     }
     func feed(_ bytes: Data) {
         lock.lock(); defer { lock.unlock() }
@@ -208,6 +223,8 @@ final class ManagedSteam: ObservableObject {
     private var account: (String, String)?
     private var rejectedAccount = false
     private var cancelled = false
+    private var sessionPersistenceFailure: String?
+    private var cloudFailure: String?
     private var sessionDirectory: URL?
     private var expectedAccount: String?
     @Published var progress: Double = 0
@@ -217,6 +234,7 @@ final class ManagedSteam: ObservableObject {
     private var lastProgress: (Date, Double)?
     let root: URL
     private let helperProvider: (() throws -> URL)?
+    private lazy var diagnostics = AppDiagnostics(root: root)
     init(root: URL, helperProvider: (() throws -> URL)? = nil) {
         self.root = root
         self.helperProvider = helperProvider
@@ -271,7 +289,7 @@ final class ManagedSteam: ObservableObject {
                 guard expectedAccount == nil || expectedAccount == id else { rejectedAccount = true; cancel(); return }
                 account = (id, name); qr = nil; message = "Account verificato. Elaborazione…"
                 do { try preserveSession() }
-                catch { message = error.localizedDescription; cancel() }
+                catch { sessionPersistenceFailure = error.localizedDescription; message = error.localizedDescription; cancel() }
 
             }
         case "account_mismatch": rejectedAccount = true
@@ -290,6 +308,8 @@ final class ManagedSteam: ObservableObject {
         case "download_complete":
             progress = 1; bytesPerSecond = 0
             message = "Download verificato. Preparazione del container…"
+        case "cloud_error":
+            cloudFailure = SteamCloudDiagnostic.message(code: value["code"] as? String ?? "engine_error", errorType: value["errorType"] as? String)
         default: break
         }
     }
@@ -315,10 +335,10 @@ final class ManagedSteam: ObservableObject {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
         return executable
     }
-    func run(_ args: [String], expected: String?, forceQR: Bool = false) async throws -> String {
+    func run(_ args: [String], expected: String?, forceQR: Bool = false, loginID: UInt32 = 1296516164) async throws -> String {
         guard !busy else { throw DockError.message("Attendi il completamento dell'operazione Steam in corso.") }
         try Task.checkCancellation()
-        busy = true; cancelled = false; rejectedAccount = false; account = nil; qr = nil
+        busy = true; cancelled = false; sessionPersistenceFailure = nil; cloudFailure = nil; rejectedAccount = false; account = nil; qr = nil
         expectedAccount = expected; progress = 0; lastProgress = nil; bytesPerSecond = 0; downloadedBytes = 0; totalBytes = 0
         defer { busy = false; process = nil; qr = nil; sessionDirectory = nil }
         let executable = try helper()
@@ -330,8 +350,9 @@ final class ManagedSteam: ObservableObject {
         defer { try? FileManager.default.removeItem(at: directory) }
         if let session { try session.account.write(to: directory.appendingPathComponent("account.config"), options: [.atomic]); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: directory.appendingPathComponent("account.config").path) }
         let p = Process(); p.executableURL = executable; p.currentDirectoryURL = directory
-        p.arguments = args + ["-remember-password", "-loginid", "1296516164"] + (session.map { ["-username", $0.username] } ?? ["-qr"])
+        p.arguments = args + ["-remember-password", "-loginid", String(loginID)] + (session.map { ["-username", $0.username] } ?? ["-qr"])
         var env = ProcessInfo.processInfo.environment; env["MACGAMEDECK_PROTOCOL"] = "1"; env["MACGAMEDECK_EXPECTED_STEAMID"] = expected
+        env["MACGAMEDECK_MACHINE_ID"] = try machineIdentity()
         env["DOTNET_ROOT"] = executable.deletingLastPathComponent().path
         env["DOTNET_ROLL_FORWARD"] = "LatestPatch"
         p.environment = env; p.standardInput = FileHandle.nullDevice
@@ -350,11 +371,28 @@ final class ManagedSteam: ObservableObject {
         try? await Task.sleep(nanoseconds: 50_000_000)
         for bytes in sink.finalEvents() { event(bytes) }
         if rejectedAccount { throw DockError.message("Hai autenticato un account diverso da quello collegato.") }
+        if let sessionPersistenceFailure { throw DockError.message(sessionPersistenceFailure) }
+        if cancelled || Task.isCancelled { throw CancellationError() }
+        if p.terminationReason == .uncaughtSignal {
+            throw DockError.message("Il motore Steam è terminato con segnale \(status). La richiesta non è stata completata; questo errore non conferma che la sessione sia scaduta.")
+        }
         guard let account else { throw DockError.message("Steam non ha completato l'accesso. Ricollega l'account tramite QR se la sessione è scaduta.") }
         try preserveSession()
         if cancelled || Task.isCancelled { throw CancellationError() }
+        if let cloudFailure { throw DockError.message(cloudFailure) }
+        if status != 0, args.contains("-deck-cloud-inventory") { throw DockError.message("La verifica Steam Cloud non è stata completata (codice \(status)). Nessun salvataggio modificato.") }
         guard status == 0 else { throw DockError.message("Steam non ha completato l'operazione. I file parziali sono conservati per riprendere il download. Verifica rete, spazio disponibile e licenza del gioco.") }
         return account.0
+    }
+    private func machineIdentity() throws -> String {
+        let file = root.appendingPathComponent("Account/steam-machine-id")
+        if let bytes = try? Data(contentsOf: file), bytes.count <= 100,
+           let text = String(data: bytes, encoding: .utf8), let id = UUID(uuidString: text) { return id.uuidString }
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let id = UUID().uuidString
+        try Data(id.utf8).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        return id
     }
     func catalog(expected: String?, forceQR: Bool = false) async throws -> (String, [SteamOwnedGame]) {
         let file = root.appendingPathComponent("catalog-\(UUID().uuidString).json")
@@ -364,6 +402,91 @@ final class ManagedSteam: ObservableObject {
         let catalog = try JSONDecoder().decode(Catalog.self, from: Data(contentsOf: file))
         guard id == catalog.steamID else { throw DockError.message("Catalogo Steam non associato alla sessione.") }
         return (id, catalog.games)
+    }
+    func cloudInventory(_ game: Game, expected: String) async throws -> SteamCloudInventory {
+        guard !busy, !preparing else { throw DockError.message("Attendi la preparazione o l’operazione Steam in corso.") }
+        guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
+        guard let saved = try SessionStore.read(root: root), saved.steamID == expected else {
+            throw DockError.message("Per verificare Steam Cloud serve la sessione Steam salvata dell'account collegato.")
+        }
+        let file = root.appendingPathComponent("cloud-inventory-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        activeGame = game.id
+        defer { activeGame = nil }
+        _ = try await run(["-app", String(id), "-deck-cloud-inventory", file.path], expected: expected)
+        let bytes = try Data(contentsOf: file)
+        guard bytes.count <= 8_000_000 else { throw DockError.message("Inventario cloud troppo grande.") }
+        let inventory = try JSONDecoder().decode(SteamCloudInventory.self, from: bytes)
+        try inventory.validate(expectedAccount: expected, expectedAppID: id)
+        message = "Inventario Steam Cloud letto: \(inventory.files.count) file. Nessun salvataggio modificato."
+        return inventory
+    }
+    func playerSnapshot(_ game: Game, expected: String) async throws -> SteamPlayerSnapshot {
+        guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
+        let file = root.appendingPathComponent("player-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        _ = try await run(["-app", String(id), "-deck-player", file.path], expected: expected)
+        let snapshot = try JSONDecoder().decode(SteamPlayerSnapshot.self, from: Data(contentsOf: file))
+        guard snapshot.steamID == expected, snapshot.appID == id, (snapshot.minutes ?? 0) >= 0 else { throw DockError.message("Dati Steam appartenenti a un altro account o non validi.") }
+        return snapshot
+    }
+    func achievements(_ game: Game, expected: String) async throws -> SteamAchievementSnapshot {
+        guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
+        let file = root.appendingPathComponent("achievements-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        _ = try await run(["-app", String(id), "-deck-achievements", file.path], expected: expected)
+        let value = try JSONDecoder().decode(SteamAchievementSnapshot.self, from: Data(contentsOf: file))
+        try value.validate(owner: expected, appID: id)
+        return value
+    }
+    func workshop(_ game: Game, expected: String, search: String = "", page: Int = 1) async throws -> SteamWorkshopPage {
+        guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
+        let file = root.appendingPathComponent("workshop-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        _ = try await run(["-app", String(id), "-deck-workshop", file.path, "-deck-search", String(search.prefix(200)), "-deck-page", String(max(1, page))], expected: expected)
+        let value = try JSONDecoder().decode(SteamWorkshopPage.self, from: Data(contentsOf: file))
+        guard value.steamID == expected, value.appID == id, value.items.count <= 24 else { throw DockError.message("Risultati Workshop non validi.") }
+        return value
+    }
+    func restoreCloudBeforeLaunch(_ game: Game, expected: String) async throws -> Int {
+        let inventory = try await cloudInventory(game, expected: expected)
+        var mapped = 0
+        for file in inventory.liveFiles {
+            let prefix = inventory.prefixes.isEmpty ? "" : inventory.prefixes[file.prefixIndex]
+            let name = prefix + (prefix.isEmpty || prefix.hasSuffix("/") || prefix.hasSuffix("%") ? "" : "/") + file.name
+            do { _ = try SteamCloudRestore.destination(name, game: game, inventory: inventory); mapped += 1 }
+            catch SteamCloudMappingError.outsideDeclaredPatterns { continue }
+        }
+        guard inventory.liveFiles.isEmpty || mapped > 0 else { throw DockError.message("I file cloud di questo gioco usano Steam API senza un percorso Auto-Cloud dichiarato: ripristino automatico non ancora supportato.") }
+        let entries = try SteamCloudRestore.plan(inventory, game: game)
+        guard !entries.isEmpty else { message = "Salvataggi locali aggiornati: avvio del gioco…"; return 0 }
+        let staging = root.appendingPathComponent("Cloud/Staging/\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let request = staging.appendingPathComponent("request.json")
+        try JSONEncoder().encode(entries).write(to: request, options: .atomic)
+        message = "Download di \(entries.count) salvataggi Steam Cloud…"
+        _ = try await run(["-app", String(inventory.appID), "-deck-cloud-download", request.path, "-deck-cloud-directory", staging.path], expected: expected)
+        try Task.checkCancellation()
+        let backups = root.appendingPathComponent("Cloud/Backups/\(expected)/\(inventory.appID)/\(UUID().uuidString)")
+        try SteamCloudRestore.apply(entries, staging: staging, backups: backups)
+        message = "\(entries.count) salvataggi cloud ripristinati. Copie locali precedenti conservate." + (mapped < inventory.liveFiles.count ? " I file Steam API senza percorso dichiarato non sono stati ripristinati." : "")
+        return entries.count
+    }
+    func externalLaunch(_ game: Game, expected: String) async throws -> (String, ManagedLaunch) {
+        guard let appID = game.steamAppID, let directory = game.installDirectory else { throw DockError.message("Installazione Steam non disponibile.") }
+        let stage = root.appendingPathComponent("Metadata/" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stage) }
+        _ = try await run(["-app", String(appID), "-deck-launch-metadata", stage.path], expected: expected)
+        let metadata = try JSONDecoder().decode(DeckMetadata.self, from: Data(contentsOf: stage.appendingPathComponent(".MacGameDeck/metadata.json")))
+        guard metadata.appID == appID else { throw DockError.message("Metadati di avvio non validi.") }
+        let location = URL(fileURLWithPath: directory)
+        if let result = try? metadata.select(in: location, platform: .macOS) {
+            return (result.0.path, ManagedLaunch(prefix: "", arguments: result.1, workingDirectory: result.2.path, platform: .macOS))
+        }
+        let result = try metadata.select(in: location, platform: .windows)
+        return (result.0.path, ManagedLaunch(prefix: root.appendingPathComponent("Containers/Steam/\(appID)/prefix").path, arguments: result.1, workingDirectory: result.2.path, platform: .windows))
     }
     func install(_ game: Game, platform: InstallPlatform = .windows, runtime: String?, expected: String?) async throws -> (String, String, ManagedLaunch) {
         guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
@@ -383,9 +506,22 @@ final class ManagedSteam: ObservableObject {
             return (exe.path, directory.path, ManagedLaunch(prefix: "", arguments: arguments, workingDirectory: working.path, platform: .macOS))
         }
         guard let runtime else { throw DockError.message("Runtime Wine non disponibile.") }
+        try await prepareWindows(directory: directory, prefix: prefix, runtime: runtime, expected: expected)
+        message = "Installato nel container. Pronto per la prova di avvio."
+        return (exe.path, directory.path, ManagedLaunch(prefix: prefix.path, arguments: arguments, workingDirectory: working.path, platform: .windows))
+    }
+    func prepareInstalledGame(_ game: Game, runtime: String, expected: String?) async throws {
+        guard !game.isNative else { return }
+        let directory = game.installDirectory.map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: game.executablePath).deletingLastPathComponent()
+        let prefix = game.managedLaunch.map { URL(fileURLWithPath: $0.prefix) } ?? root.appendingPathComponent("Prefixes/" + game.id.uuidString)
+        activeGame = game.id; preparing = true; cancelled = false
+        defer { activeGame = nil; preparing = false }
+        try await prepareWindows(directory: directory, prefix: prefix, runtime: runtime, expected: expected)
+    }
+    private func prepareWindows(directory: URL, prefix: URL, runtime: String, expected: String?) async throws {
         message = "Inizializzazione ambiente Windows…"
-        var dependencies = try SteamDependencies.plan(in: directory, allowMissing: true)
-        let groups = try SteamDependencies.missingGroups(dependencies)
+        var dependencies = try SteamDependencies.plan(in: directory, allowMissing: true, prefix: prefix)
+        let groups = try SteamDependencies.missingGroups(dependencies.filter { !$0.isModernVisualCPP })
         if !groups.isEmpty {
             message = "Recupero automatico dei componenti richiesti da Steam…"
             let cache = root.appendingPathComponent("Tools/CommonRedist")
@@ -398,15 +534,33 @@ final class ManagedSteam: ObservableObject {
             preparing = true
             try Task.checkCancellation()
             try SteamDependencies.copyGroups(groups, from: cache, to: directory)
-            dependencies = try SteamDependencies.plan(in: directory)
+            dependencies = try SteamDependencies.plan(in: directory, allowMissing: true, prefix: prefix)
         }
-        if !WineRuntime.missingFiles(prefix: prefix).isEmpty {
+        let runtimeReceipt = prefix.appendingPathComponent(".MacGameDeck/runtime-path.txt")
+        let ownedRuntime = OwnedRuntime(root: root).installed?.path == runtime
+        let changedRuntime = ownedRuntime && (try? String(contentsOf: runtimeReceipt, encoding: .utf8)) != runtime
+        if changedRuntime {
+            let backup = prefix.appendingPathComponent(".MacGameDeck/runtime-backups/" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            for name in ["system.reg", "user.reg", "userdef.reg"] {
+                let file = prefix.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.copyItem(at: file, to: backup.appendingPathComponent(name)) }
+            }
+            let wine = URL(fileURLWithPath: runtime).deletingLastPathComponent().deletingLastPathComponent()
+            let updated = try WinePrefixMigration.refresh(prefix: prefix, wine: wine, backup: backup)
+            diagnostics.write("Componenti", "Migrazione Wine: " + String(updated) + " componenti interni aggiornati; backup completato.")
+        }
+        if changedRuntime || !WineRuntime.missingFiles(prefix: prefix).isEmpty {
             try await prepare(prefix: prefix, runtime: runtime, arguments: ["wineboot", "-u"])
             message = "Attendo che Wine completi il container…"
             try await WineRuntime.waitUntilReady(prefix: prefix)
         }
         try WineRuntime.validate(prefix: prefix)
-        for step in dependencies {
+        if ownedRuntime {
+            try FileManager.default.createDirectory(at: runtimeReceipt.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(runtime.utf8).write(to: runtimeReceipt, options: .atomic)
+        }
+        for step in dependencies where !step.isModernVisualCPP {
             message = "Installazione automatica: \(step.name)…"
             do { try await prepare(prefix: prefix, runtime: runtime, arguments: step.wineArguments, directory: step.executable.deletingLastPathComponent()) }
             catch is CancellationError { throw CancellationError() }
@@ -414,15 +568,54 @@ final class ManagedSteam: ObservableObject {
             try FileManager.default.createDirectory(at: step.marker.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data().write(to: step.marker, options: [.atomic])
         }
-        message = "Installato nel container. Pronto per la prova di avvio."
-        return (exe.path, directory.path, ManagedLaunch(prefix: prefix.path, arguments: arguments, workingDirectory: working.path, platform: .windows))
+        for arch in try WindowsPrerequisites.architectures(in: directory) {
+            if WindowsPrerequisites.isReady(prefix: prefix, architecture: arch) {
+                diagnostics.write("Componenti", "Visual C++ \(arch) già valido: \(WindowsPrerequisites.registeredVersion(prefix: prefix, architecture: arch)?.map(String.init).joined(separator: ".") ?? "")")
+                continue
+            }
+            message = "Recupero Visual C++ 2015–2022 (\(arch))…"
+            let installer = try await WindowsPrerequisites.download(architecture: arch, cache: root.appendingPathComponent("Tools/VisualCPP"))
+            message = "Installazione Visual C++ (\(arch))…"
+            try await prepare(prefix: prefix, runtime: runtime, arguments: [SteamDependency.windowsPath(installer), "/install", "/quiet", "/norestart"], existingVisualCPP: arch)
+            try await WindowsPrerequisites.waitUntilInstalled(prefix: prefix, architecture: arch)
+            try WindowsPrerequisites.record(prefix: prefix, architecture: arch)
+        }
     }
-    private func prepare(prefix: URL, runtime: String, arguments: [String], directory: URL? = nil) async throws {
+    func verifyWindowsRuntime(runtime: String) async throws {
+        guard !busy && !preparing else { throw DockError.message("Attendi che termini l'operazione corrente.") }
+        let probe = root.appendingPathComponent("Tools/BootstrapChecks/" + UUID().uuidString + "/prefix")
+        try FileManager.default.createDirectory(at: probe.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let oldGame = activeGame; activeGame = nil
+        defer { activeGame = oldGame }
+        diagnostics.write("Motore", "Verifica bootstrap Windows in un container nuovo, separato dai giochi.")
+        do {
+            try await prepare(prefix: probe, runtime: runtime, arguments: ["wineboot", "--init"])
+            try await WineRuntime.waitUntilReady(prefix: probe)
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            diagnostics.write("Motore", "Bootstrap Windows non completato: " + error.localizedDescription)
+            throw DockError.message("Il motore Wine non completa l'inizializzazione di Windows. Apri Log → Motore Windows · Bootstrap per la diagnosi.")
+        }
+        diagnostics.write("Motore", "Bootstrap Windows verificato in un container nuovo.")
+    }
+    private func prepare(prefix: URL, runtime: String, arguments: [String], directory: URL? = nil, existingVisualCPP: String? = nil) async throws {
         try Task.checkCancellation()
+        diagnostics.write("Componenti", "Preparazione: " + (arguments.first.map { URL(fileURLWithPath: $0.replacingOccurrences(of: "\\", with: "/")).lastPathComponent } ?? "Wine"))
         busy = true
         defer { busy = false; process = nil }
         let p = Process(); p.executableURL = URL(fileURLWithPath: runtime)
-        p.arguments = arguments; p.environment = WineRuntime.environment(prefix: prefix, runtime: runtime)
+        p.arguments = arguments
+        var wineEnvironment = OwnedRuntime(root: root).environment(runtime: runtime, prefix: prefix, directX12: false)
+        if arguments.first?.lowercased().contains("wineboot") == true {
+            wineEnvironment["WINEDEBUG"] = "-all,err+all,trace+module,trace+process,trace+seh"
+            if OwnedRuntime(root: root).installed?.path == runtime {
+                let boot = URL(fileURLWithPath: runtime).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("lib/wine/x86_64-windows/wineboot.exe")
+                p.arguments = [boot.path] + arguments.dropFirst()
+            }
+        }
+        let isolated = ["DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"].filter { ProcessInfo.processInfo.environment[$0] != nil && wineEnvironment[$0] == nil }
+        if !isolated.isEmpty { diagnostics.write("Componenti", "Diagnostica Xcode esclusa dai processi Wine: " + isolated.joined(separator: ", ")) }
+        p.environment = wineEnvironment
         p.currentDirectoryURL = directory
         p.standardInput = FileHandle.nullDevice
         let output = WineOutputTail(), stdout = Pipe(), stderr = Pipe()
@@ -436,11 +629,11 @@ final class ManagedSteam: ObservableObject {
             do { try p.run() } catch { p.terminationHandler = nil; c.resume(throwing: error) }
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
-        if let gameID = activeGame {
+        do {
             let folder = root.appendingPathComponent("Logs")
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let file = folder.appendingPathComponent("\(gameID.uuidString).log")
-            let heading = Data("\nWine preparation — \(Date())\nRuntime: \(runtime)\nCommand: \(arguments.joined(separator: " "))\nExit: \(status)\n".utf8)
+            let file = folder.appendingPathComponent(activeGame.map { $0.uuidString + ".log" } ?? "engine-check.log")
+            let heading = Data("\nWine preparation — \(Date())\nRuntime: \(runtime)\nCommand: \((p.arguments ?? arguments).joined(separator: " "))\nExit: \(status)\n".utf8)
             var content = Data()
             if let reader = try? FileHandle(forReadingFrom: file) {
                 defer { try? reader.close() }
@@ -453,7 +646,9 @@ final class ManagedSteam: ObservableObject {
             try? content.write(to: file, options: .atomic)
         }
         process = nil
+        diagnostics.write("Componenti", "Wine: codice di uscita \(status)")
         if cancelled || Task.isCancelled { throw CancellationError() }
+        if status == 102, let arch = existingVisualCPP, WindowsPrerequisites.installedAndCompatible(prefix: prefix, architecture: arch) { diagnostics.write("Componenti", "Codice 102 accettato: runtime \(arch) già registrato e DLL compatibili verificate."); return }
         guard [0, 194, 105].contains(status) else { throw DockError.message("Il download è completo, ma la preparazione Wine non è riuscita (\(status)).") }
     }
 }

@@ -22,6 +22,9 @@ struct Game: Identifiable, Codable {
     var managedLaunch: ManagedLaunch?
     var platforms: [String]?
     var familyOwners: [String]?
+    var steamMinutes: Int? = nil
+    var steamAchievementsUnlocked: Int? = nil
+    var steamAchievementsTotal: Int? = nil
     var iconHash: String?
     var isFamilyShared: Bool { !(familyOwners ?? []).isEmpty }
     var isInstalled: Bool {

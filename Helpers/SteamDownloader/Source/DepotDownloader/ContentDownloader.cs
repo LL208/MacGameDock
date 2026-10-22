@@ -162,6 +162,7 @@ namespace DepotDownloader
                 EAppInfoSection.Extended => "extended",
                 EAppInfoSection.Config => "config",
                 EAppInfoSection.Depots => "depots",
+                EAppInfoSection.UFS => "ufs",
                 _ => throw new NotImplementedException(),
             };
             var section_kv = appinfo.Children.Where(c => c.Name == section_key).FirstOrDefault();
@@ -343,6 +344,7 @@ namespace DepotDownloader
             var ownAppIDs = appIDs.ToHashSet();
             appIDs = appIDs.Union(familyApps.Select(x => x.appid)).ToList();
             var accountID = steam3.steamUser.SteamID.ConvertToUInt64();
+            var playerTotals = await steam3.DeckPlayerCatalog(appIDs);
             var games = new List<object>();
             for (var start = 0; start < appIDs.Count; start += 100)
             {
@@ -354,11 +356,13 @@ namespace DepotDownloader
                     if (type == "game" || type == "demo" || type == "mod")
                     {
                         familyByID.TryGetValue(id, out var family);
+                        playerTotals.TryGetValue(id, out var player);
                         var owners = family?.owner_steamids.Where(x => x != accountID).Select(x => x.ToString()).ToArray() ?? [];
                         games.Add(new { appid = id, name = common["name"].AsString(),
                             platforms = (common["oslist"].AsString() ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries),
                             familyOwners = ownAppIDs.Contains(id) ? Array.Empty<string>() : owners,
-                            iconHash = common["icon"].AsString() });
+                            iconHash = common["icon"].AsString(), steamMinutes = player?.minutes,
+                            steamAchievementsUnlocked = player?.unlocked, steamAchievementsTotal = player?.total });
                     }
                 }
                 DeckIntegration.Emit(new { type = "library_progress", done = Math.Min(start + 100, appIDs.Count), total = appIDs.Count });
@@ -367,6 +371,18 @@ namespace DepotDownloader
             File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(new { steamID, games }));
             DeckIntegration.Emit(new { type = "library_complete", count = games.Count });
         }
+
+        public static async Task ExportDeckLaunchMetadata(uint appId, string destination)
+        {
+            await steam3.RequestAppInfo(appId);
+            DeckIntegration.Metadata(appId, GetSteam3AppSection(appId, EAppInfoSection.Common), GetSteam3AppSection(appId, EAppInfoSection.Config), destination, false);
+        }
+        public static Task ExportDeckAchievements(uint appId, string destination) => steam3.ExportDeckAchievements(appId, destination);
+        public static Task ExportDeckWorkshop(uint appId, string destination, string search, uint page) => steam3.ExportDeckWorkshop(appId, destination, search, page);
+        public static Task RunDeckService(string directory, int parentPid) => steam3.RunDeckService(directory, parentPid);
+        public static Task DownloadDeckCloud(uint appId, string request, string destination) => steam3.DownloadDeckCloud(appId, request, destination);
+        public static Task ExportDeckPlayer(uint appId, string destination) => steam3.ExportDeckPlayer(appId, destination);
+        public static Task ExportDeckCloudInventory(uint appId, string destination) => steam3.ExportDeckCloudInventory(appId, destination);
 
         public static void ShutdownSteam3()
         {

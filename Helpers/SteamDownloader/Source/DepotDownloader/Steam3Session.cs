@@ -16,7 +16,7 @@ using SteamKit2.Internal;
 
 namespace DepotDownloader
 {
-    class Steam3Session
+    partial class Steam3Session
     {
         public bool IsLoggedOn { get; private set; }
 
@@ -62,10 +62,11 @@ namespace DepotDownloader
             this.logonDetails = details;
             this.authenticatedUser = details.Username != null || ContentDownloader.Config.UseQrCode;
 
-            var clientConfiguration = SteamConfiguration.Create(config =>
-                config
-                    .WithHttpClientFactory(HttpClientFactory.CreateHttpClient)
-            );
+            var clientConfiguration = SteamConfiguration.Create(config => {
+                config.WithHttpClientFactory(HttpClientFactory.CreateHttpClient);
+                var machine = Environment.GetEnvironmentVariable("MACGAMEDECK_MACHINE_ID");
+                if (!string.IsNullOrEmpty(machine)) config.WithMachineInfoProvider(new DeckMachineInfoProvider(machine));
+            });
 
             this.steamClient = new SteamClient(clientConfiguration);
 
@@ -381,6 +382,153 @@ namespace DepotDownloader
             throw new Exception($"EResult {(int)details.Result} ({details.Result}) while retrieving file details for pubfile {pubFile}.");
         }
 
+
+        // Read-only cloud preflight for MacGameDeck. No URLs, authorization headers or save contents are exported.
+        public async Task ExportDeckCloudInventory(uint appId, string destination)
+        {
+            await RequestAppInfo(appId);
+            if (ContentDownloader.GetSteam3AppSection(appId, EAppInfoSection.UFS) == null)
+            {
+                var empty = new { schemaVersion = 1, steamID = steamUser.SteamID.ConvertToUInt64().ToString(), appID = appId,
+                    changeNumber = "0", isDelta = false, prefixes = Array.Empty<string>(), files = Array.Empty<object>(), ufs = (object)null };
+                System.IO.File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(empty));
+                return;
+            }
+            var cloud = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Cloud>();
+            var result = await cloud.GetAppFileChangelist(new CCloud_GetAppFileChangelist_Request { appid = appId, synced_change_number = 0 });
+            if (result.Result != EResult.OK)
+                throw new DeckCloudException("steam_" + result.Result.ToString());
+            if (result.Body.is_only_delta)
+                throw new DeckCloudException("partial_inventory");
+            object Node(KeyValue node) => new { name = node.Name, value = node.Value, children = node.Children.Select(Node).ToArray() };
+            var files = result.Body.files.Select(file => new {
+                name = file.file_name, sha1 = Convert.ToHexString(file.sha_file).ToLowerInvariant(),
+                size = file.raw_file_size, timestamp = file.time_stamp, state = (int)file.persist_state,
+                prefixIndex = file.path_prefix_index
+            }).ToArray();
+            var value = new {
+                schemaVersion = 1, steamID = steamUser.SteamID.ConvertToUInt64().ToString(), appID = appId,
+                changeNumber = result.Body.current_change_number.ToString(), isDelta = false,
+                prefixes = result.Body.path_prefixes.ToArray(), files,
+                ufs = ContentDownloader.GetSteam3AppSection(appId, EAppInfoSection.UFS) is KeyValue ufs ? Node(ufs) : null
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(value);
+            System.IO.File.WriteAllText(destination, json);
+            DeckIntegration.Emit(new { type = "cloud_inventory", appID = appId, count = files.Length });
+        }
+
+        // Transfer to staging only; the Swift layer verifies and installs newer saves with backups.
+        public async Task DownloadDeckCloud(uint appId, string requestFile, string destination)
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                try { await DownloadDeckCloudOnce(appId, requestFile, destination); return; }
+                catch (TaskCanceledException) { if (attempt == 2) throw new DeckCloudException("steam_Timeout"); }
+                catch (System.Net.Http.HttpRequestException) { if (attempt == 2) throw new DeckCloudException("steam_NoConnection"); }
+                await Task.Delay(500 * (attempt + 1));
+            }
+        }
+        private async Task DownloadDeckCloudOnce(uint appId, string requestFile, string destination)
+        {
+            var requests = System.Text.Json.JsonSerializer.Deserialize<DeckCloudDownload[]>(System.IO.File.ReadAllText(requestFile));
+            if (requests == null || requests.Length > 10000) throw new DeckCloudException("invalid_request");
+            var cloud = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Cloud>();
+            System.IO.Directory.CreateDirectory(destination);
+            using var http = HttpClientFactory.CreateHttpClient(false);
+            http.Timeout = TimeSpan.FromSeconds(90);
+            for (int index = 0; index < requests.Length; index++)
+            {
+                var file = requests[index];
+                if (file.size > 268435456 || file.sha1.Length != 40) throw new DeckCloudException("invalid_request");
+                DeckIntegration.Emit(new { type = "cloud_transfer_phase", phase = "metadata", index });
+                var response = await cloud.ClientFileDownload(new CCloud_ClientFileDownload_Request { appid = appId, filename = file.name });
+                if (response.Result != EResult.OK) throw new DeckCloudException("steam_" + response.Result);
+                var body = response.Body;
+                if (body.encrypted) throw new DeckCloudException("unsupported_transfer");
+                if (body.is_explicit_delete || body.raw_file_size != file.size || body.time_stamp != file.timestamp ||
+                    !Convert.ToHexString(body.sha_file).Equals(file.sha1, StringComparison.OrdinalIgnoreCase)) throw new DeckCloudException("cloud_changed");
+                if (!Uri.TryCreate((body.use_https ? "https://" : "http://") + body.url_host + body.url_path, UriKind.Absolute, out var url) ||
+                    url.Scheme != "https" || !string.IsNullOrEmpty(url.UserInfo)) throw new DeckCloudException("unsupported_transfer");
+                using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+                foreach (var header in body.request_headers) request.Headers.TryAddWithoutValidation(header.name, header.value);
+                DeckIntegration.Emit(new { type = "cloud_transfer_phase", phase = "download", index });
+                using var reply = await http.SendAsync(request, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                reply.EnsureSuccessStatusCode();
+                using var input = await reply.Content.ReadAsStreamAsync();
+                using var buffer = new System.IO.MemoryStream();
+                var chunk = new byte[65536]; int count;
+                while ((count = await input.ReadAsync(chunk)) > 0) { if (buffer.Length + count > 268435456) throw new DeckCloudException("file_too_large"); await buffer.WriteAsync(chunk.AsMemory(0, count)); }
+                byte[] bytes = buffer.ToArray();
+                if (body.file_size != body.raw_file_size)
+                {
+                    buffer.Position = 0;
+                    using var archive = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Read);
+                    if (archive.Entries.Count != 1 || archive.Entries[0].Length != body.raw_file_size) throw new DeckCloudException("unsupported_transfer");
+                    using var raw = archive.Entries[0].Open(); using var decoded = new System.IO.MemoryStream();
+                    await raw.CopyToAsync(decoded); bytes = decoded.ToArray();
+                }
+                if ((ulong)bytes.Length != file.size || !Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(bytes)).Equals(file.sha1, StringComparison.OrdinalIgnoreCase))
+                    throw new DeckCloudException("hash_mismatch");
+                System.IO.File.WriteAllBytes(System.IO.Path.Combine(destination, index.ToString() + ".save"), bytes);
+                DeckIntegration.Emit(new { type = "cloud_download", completed = index + 1, total = requests.Length });
+            }
+        }
+        public sealed class DeckCloudDownload
+        {
+            public string name { get; set; }
+            public string sha1 { get; set; }
+            public ulong size { get; set; }
+            public ulong timestamp { get; set; }
+        }
+
+        public sealed class DeckPlayerTotals { public int? minutes; public uint? unlocked; public uint? total; }
+        public async Task<Dictionary<uint, DeckPlayerTotals>> DeckPlayerCatalog(IEnumerable<uint> appIds)
+        {
+            var totals = new Dictionary<uint, DeckPlayerTotals>();
+            var player = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Player>();
+            var user = steamUser.SteamID.ConvertToUInt64();
+            try
+            {
+                var owned = await player.GetOwnedGames(new CPlayer_GetOwnedGames_Request { steamid = user, include_played_free_games = true, skip_unvetted_apps = false });
+                if (owned.Result == EResult.OK)
+                    foreach (var game in owned.Body.games) totals[(uint)game.appid] = new DeckPlayerTotals { minutes = game.playtime_forever >= 0 ? game.playtime_forever : null };
+                foreach (var batch in appIds.Chunk(100))
+                {
+                    var query = new CPlayer_GetAchievementsProgress_Request { steamid = user, language = "italian", include_unvetted_apps = true };
+                    query.appids.AddRange(batch);
+                    var response = await player.GetAchievementsProgress(query);
+                    if (response.Result != EResult.OK) continue;
+                    foreach (var game in response.Body.achievement_progress)
+                    {
+                        if (!totals.TryGetValue(game.appid, out var entry)) totals[game.appid] = entry = new DeckPlayerTotals();
+                        entry.unlocked = game.unlocked; entry.total = game.total;
+                    }
+                }
+            }
+            catch (Exception) { DeckIntegration.Emit(new { type = "player_stats_unavailable" }); }
+            return totals;
+        }
+
+        public async Task ExportDeckPlayer(uint appId, string destination)
+        {
+            var player = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Player>();
+            var user = steamUser.SteamID.ConvertToUInt64();
+            var query = new CPlayer_GetOwnedGames_Request { steamid = user, include_played_free_games = true, skip_unvetted_apps = false };
+            query.appids_filter.Add(appId);
+            var owned = await player.GetOwnedGames(query);
+            if (owned.Result != EResult.OK) throw new DeckCloudException("steam_" + owned.Result);
+            var progressQuery = new CPlayer_GetAchievementsProgress_Request { steamid = user, language = "italian", include_unvetted_apps = true };
+            progressQuery.appids.Add(appId);
+            var progress = await player.GetAchievementsProgress(progressQuery);
+            var game = owned.Body.games.FirstOrDefault(g => g.appid == appId);
+            var achievements = progress.Result == EResult.OK ? progress.Body.achievement_progress.FirstOrDefault(g => g.appid == appId) : null;
+            var value = new { steamID = user.ToString(), appID = appId,
+                minutes = game == null ? (int?)null : game.playtime_forever,
+                unlocked = achievements == null ? (uint?)null : achievements.unlocked,
+                total = achievements == null ? (uint?)null : achievements.total,
+                fetchedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
+            System.IO.File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(value));
+        }
 
         public async Task<SteamCloud.UGCDetailsCallback> GetUGCDetails(UGCHandle ugcHandle)
         {

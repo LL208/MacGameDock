@@ -41,10 +41,15 @@ final class DownloadFeaturesTests: XCTestCase {
         let first = ManagedSteam(root: directory, helperProvider: { script })
         let firstID = try await first.run([], expected: "76561198000000000")
         XCTAssertEqual(firstID, "76561198000000000")
+        let machineFile = directory.appendingPathComponent("Account/steam-machine-id")
+        let machine = try String(contentsOf: machineFile)
+        XCTAssertNotNil(UUID(uuidString: machine))
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: machineFile.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
         // A fresh instance models relaunching the application.
         let second = ManagedSteam(root: directory, helperProvider: { script })
         let secondID = try await second.run([], expected: "76561198000000000")
         XCTAssertEqual(secondID, "76561198000000000")
+        XCTAssertEqual(try String(contentsOf: machineFile), machine)
         let sessions = try FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("Sessions"), includingPropertiesForKeys: nil)
         XCTAssertTrue(sessions.isEmpty)
     }
@@ -171,4 +176,18 @@ final class DownloadFeaturesTests: XCTestCase {
         XCTAssertTrue(estimate.memoryStatus.contains("limite"))
         XCTAssertNil(PerformanceEstimate(machine: machine, platform: .windows, insights: nil).suggestedRAM)
     }
+    func testEngineCrashIsNotReportedAsAnExpiredLogin() async throws {
+        let directory = try root(), helper = directory.appendingPathComponent("crashing-helper")
+        try Data("#!/bin/sh\nkill -SEGV $$\n".utf8).write(to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let engine = ManagedSteam(root: directory, helperProvider: { helper })
+        do {
+            _ = try await engine.run([], expected: nil)
+            XCTFail("Expected a process crash")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("segnale"))
+            XCTAssertFalse(error.localizedDescription.contains("Ricollega"))
+        }
+    }
+
 }
