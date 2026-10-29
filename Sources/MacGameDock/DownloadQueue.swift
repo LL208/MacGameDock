@@ -27,6 +27,7 @@ struct DownloadJob: Identifiable, Codable {
     var error: String?
     let createdAt: Date
     var finishedAt: Date? = nil
+    var storageRoot: String? = nil
 }
 @MainActor
 final class DownloadQueue: ObservableObject {
@@ -53,10 +54,10 @@ final class DownloadQueue: ObservableObject {
         do { try JSONEncoder().encode(jobs).write(to: file, options: [.atomic]) }
         catch { storageError = "Impossibile salvare la coda dei download." }
     }
-    func enqueue(_ game: Game, platform: InstallPlatform, accountID: String?) {
+    func enqueue(_ game: Game, platform: InstallPlatform, accountID: String?, storageRoot: String? = nil) {
         guard storageError == nil else { return }
         guard !jobs.contains(where: { $0.game.id == game.id && [.queued, .active, .paused].contains($0.state) }) else { return }
-        jobs.append(DownloadJob(id: UUID(), game: game, platform: platform, accountID: accountID, state: .queued, createdAt: Date()))
+        jobs.append(DownloadJob(id: UUID(), game: game, platform: platform, accountID: accountID, state: .queued, createdAt: Date(), storageRoot: storageRoot))
         persist(); start()
     }
     func pause(_ id: UUID) {

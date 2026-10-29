@@ -382,6 +382,8 @@ namespace DepotDownloader
         public static Task RunDeckService(string directory, int parentPid) => steam3.RunDeckService(directory, parentPid);
         public static Task DownloadDeckCloud(uint appId, string request, string destination) => steam3.DownloadDeckCloud(appId, request, destination);
         public static Task ExportDeckPlayer(uint appId, string destination) => steam3.ExportDeckPlayer(appId, destination);
+        public static Task UploadDeckCloud(uint appId, string requestFile) => steam3.UploadDeckCloud(appId, requestFile);
+
         public static Task ExportDeckCloudInventory(uint appId, string destination) => steam3.ExportDeckCloudInventory(appId, destination);
 
         public static void ShutdownSteam3()
@@ -1265,6 +1267,7 @@ namespace DepotDownloader
                 do
                 {
                     cts.Token.ThrowIfCancellationRequested();
+                    await DeckBandwidth.WaitAsync(chunk.CompressedLength, cts.Token).ConfigureAwait(false);
 
                     Server connection = null;
 

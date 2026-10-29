@@ -2,18 +2,7 @@ import SwiftUI
 
 struct GameArtwork: View {
     let game: Game
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10).fill(Color.indigo.opacity(0.4))
-            Image(systemName: "gamecontroller.fill").foregroundStyle(.mint)
-            if let id = game.steamAppID {
-                let url = game.iconHash.flatMap { hash in
-                    hash.isEmpty ? nil : URL(string: "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/\(id)/\(hash).jpg")
-                } ?? URL(string: "https://cdn.cloudflare.steamstatic.com/steam/apps/\(id)/header.jpg")
-                AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
-            }
-        }.clipped().clipShape(RoundedRectangle(cornerRadius: 10))
-    }
+    var body: some View { DeckArtwork(game: game).clipShape(RoundedRectangle(cornerRadius: 10)) }
 }
 struct DownloadsView: View {
     @EnvironmentObject var library: Library
@@ -87,6 +76,7 @@ struct DownloadsView: View {
     }
 }
 struct GameDetailsView: View {
+    @EnvironmentObject var experience: GameExperience
     @EnvironmentObject var library: Library
     @Environment(\.dismiss) private var dismiss
     let game: Game
@@ -110,6 +100,14 @@ struct GameDetailsView: View {
                 }
                 if fetching { ProgressView("Verifica versioni e requisiti Steam…") }
                 else {
+                    GroupBox("Destinazione del download") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(game.storageContainer ?? experience.preferences.storageRoot ?? "Cartella dati di MacGameDeck").font(.caption).textSelection(.enabled)
+                            if let free = GameStorage.available(at: URL(fileURLWithPath: game.storageContainer ?? experience.preferences.storageRoot ?? library.root.path)) { Text("Spazio libero: " + ByteCountFormatter.string(fromByteCount: free, countStyle: .file)).font(.caption) }
+                            if let storage = insights?.requirement("Storage", for: platform) { Text("Spazio richiesto dallo store: " + storage).font(.caption) }
+                            if game.storageContainer == nil { Button("Scegli cartella o disco…") { library.chooseStorage() } }
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     Text("Quale versione vuoi installare?").font(.headline)
                     Picker("Versione", selection: $platform) {
                         if hasMac { Text("Mac nativa").tag(InstallPlatform.macOS) }

@@ -29,6 +29,17 @@ final class Library: ObservableObject {
     lazy var social = SteamSocial(root: root, helperProvider: steamHelperProvider)
     lazy var managedSteam = ManagedSteam(root: root, helperProvider: steamHelperProvider)
     lazy var activity = PlayActivity(root: root)
+    lazy var experience = GameExperience(root: root)
+    lazy var mods = WorkshopLibrary(root: root)
+    @Published private(set) var launchStages: [UUID: String] = [:]
+    @Published private(set) var gameStatus: [UUID: String] = [:]
+    @Published private(set) var cloudStatuses: [UUID: String] = [:]
+    @Published private(set) var steamConfirmed: [UUID: Date] = [:]
+    @Published private(set) var refreshingStats: Set<UUID> = []
+    @Published private(set) var maintenance: Set<UUID> = []
+    private var launchTasks: [UUID: Task<Void, Never>] = [:]
+    private var syncingSaves: Set<UUID> = []
+    private var pausedForGame: [UUID] = []
     private var nativeApps: [UUID: NSRunningApplication] = [:]
     private var nativeTimer: Timer?
     @Published var installSelection: Game?
@@ -85,6 +96,23 @@ final class Library: ObservableObject {
         data = candidate
     }
 
+    private var automaticStarted = false
+    lazy var artwork = ArtworkStore(root: root)
+
+    func startAutomaticServices() async {
+        guard !automaticStarted else { return }; automaticStarted = true
+        if ProcessInfo.processInfo.arguments.contains("--verify-windows-runtime") { prepareEngine(); return }
+        await scanInstalledGames()
+        if experience.preferences.resumeDownloads { downloads.resumeAll() }
+        retryPendingCloud()
+        if let owner = data.steamAccount?.steamID { social.start(owner: owner) }
+        if data.steamAccount?.steamID == managedSteam.savedAccountID, managedSteam.hasSavedSession { syncSteam() }
+    }
+    func addScanRoot(at url: URL) {
+        var candidate = data; var roots = candidate.extraScanRoots ?? []
+        if !roots.contains(url.path) { roots.append(url.path) }; candidate.extraScanRoots = roots
+        do { try commit(candidate); Task { await scanInstalledGames() } } catch { self.error = error.localizedDescription }
+    }
     func scanInstalledGames() async {
         guard !scanning else { return }
         scanning = true
@@ -200,6 +228,9 @@ final class Library: ObservableObject {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importGame(at: url, store: store)
+    }
+    func importGame(at url: URL, store: GameStore) {
         guard ["exe", "app"].contains(url.pathExtension.lowercased()) else {
             error = "Scegli un file .exe o un'applicazione .app."
             return
@@ -225,13 +256,14 @@ final class Library: ObservableObject {
     @Published var cloudLaunchFailure: Game?
     @Published private(set) var preparingLaunch = Set<UUID>()
     func launch(_ game: Game) {
-        guard !running.contains(game.id), !preparingLaunch.contains(game.id) else { return }
+        guard !isBusy(game) else { return }
         diagnostics.write("Avvio", "Richiesta di avvio", game: game)
         if game.isInstalled, game.steamAppID != nil, game.launchURL?.hasPrefix("steam:") == true {
             preparingLaunch.insert(game.id)
-            Task { @MainActor in
-                defer { preparingLaunch.remove(game.id) }
+            launchTasks[game.id] = Task { @MainActor in
+                defer { preparingLaunch.remove(game.id); launchStages.removeValue(forKey: game.id); launchTasks.removeValue(forKey: game.id) }
                 do {
+                    launchStages[game.id] = "Attendo l’operazione Steam in corso…"
                     while managedSteam.busy || signingIn || syncingSteam { try await Task.sleep(nanoseconds: 200_000_000) }
                     guard let owner = data.steamAccount?.steamID else { throw DockError.message("Collega l'account Steam per identificare l'avvio del gioco già installato.") }
                     let launch = try await managedSteam.externalLaunch(game, expected: owner)
@@ -239,21 +271,26 @@ final class Library: ObservableObject {
                     var candidate = data
                     guard let index = candidate.games.firstIndex(where: { $0.id == game.id }) else { return }
                     candidate.games[index] = updated; try commit(candidate)
-                    preparingLaunch.remove(game.id); self.launch(updated)
-                } catch { self.error = error.localizedDescription }
+                    preparingLaunch.remove(game.id); Task { self.launch(updated) }
+                } catch is CancellationError { gameStatus[game.id] = "Avvio annullato" }
+                catch { self.error = error.localizedDescription }
             }
             return
         }
         if game.isInstalled, !game.isNative, game.launchURL == nil, (game.managedLaunch == nil || data.steamAccount == nil || game.steamAppID == nil) {
             preparingLaunch.insert(game.id)
-            Task { @MainActor in
-                defer { preparingLaunch.remove(game.id) }
+            launchTasks[game.id] = Task { @MainActor in
+                defer { preparingLaunch.remove(game.id); launchStages.removeValue(forKey: game.id); launchTasks.removeValue(forKey: game.id) }
                 do {
                     while managedSteam.busy || managedSteam.preparing { try await Task.sleep(nanoseconds: 200_000_000) }
+                    launchStages[game.id] = "Controllo motore e componenti…"
                     let runtime = try await resolvedRuntime()
                     try await managedSteam.prepareInstalledGame(game, runtime: runtime, expected: nil)
+                    try Task.checkCancellation()
+                    launchStages[game.id] = "Avvio del gioco…"
                     launchDirect(game)
-                } catch { self.error = "Preparazione dei componenti: " + error.localizedDescription }
+                } catch is CancellationError { gameStatus[game.id] = "Avvio annullato" }
+                catch { self.error = "Preparazione dei componenti: " + error.localizedDescription }
             }
             return
         }
@@ -261,28 +298,37 @@ final class Library: ObservableObject {
               let owner = data.steamAccount?.steamID else { launchDirect(game); return }
         cloudLaunchFailure = nil
         preparingLaunch.insert(game.id)
-        Task { @MainActor in
-            defer { preparingLaunch.remove(game.id) }
+        launchTasks[game.id] = Task { @MainActor in
+            defer { preparingLaunch.remove(game.id); launchStages.removeValue(forKey: game.id); launchTasks.removeValue(forKey: game.id) }
             do {
+                launchStages[game.id] = "Attendo l’operazione Steam in corso…"
                 while managedSteam.busy || managedSteam.preparing || signingIn || syncingSteam {
                     try await Task.sleep(nanoseconds: 200_000_000)
                 }
                 guard data.steamAccount?.steamID == owner, data.games.contains(where: { $0.id == game.id }) else { return }
                 if !game.isNative {
+                    launchStages[game.id] = "Controllo motore e componenti…"
                     let runtime = try await resolvedRuntime()
                     do { try await managedSteam.prepareInstalledGame(game, runtime: runtime, expected: owner) }
                     catch { self.error = "Preparazione dei componenti: " + error.localizedDescription; return }
                 }
+                launchStages[game.id] = "Confronto i salvataggi con Steam Cloud…"
+                _ = try await managedSteam.uploadCloudAfterPlay(game, expected: owner)
                 _ = try await managedSteam.restoreCloudBeforeLaunch(game, expected: owner)
+                cloudStatuses[game.id] = "Salvataggi confrontati prima dell’avvio"
                 guard data.steamAccount?.steamID == owner else { return }
                 if !game.isNative, let appID = game.steamAppID {
                     do {
+                        launchStages[game.id] = "Preparo i trofei Steam…"
                         let schema = social.connected ? try await social.achievements(appID) : try await managedSteam.achievements(game, expected: owner)
                         try achievements.prepare(game, snapshot: schema)
                     } catch { achievements.prepareCached(game, owner: owner); steamMessage = "Trofei in gioco non disponibili per questo avvio: " + error.localizedDescription }
                 }
+                try Task.checkCancellation()
+                launchStages[game.id] = "Avvio del gioco…"
                 launchDirect(game)
-            } catch { self.cloudLaunchFailure = game; self.error = "Avvio sospeso: " + error.localizedDescription }
+            } catch is CancellationError { gameStatus[game.id] = "Avvio annullato" }
+            catch { gameStatus[game.id] = "Avvio sospeso: verifica cloud non completata"; self.cloudLaunchFailure = game; self.error = "Avvio sospeso: " + error.localizedDescription }
         }
     }
     func launchWithLocalSaves(_ game: Game) {
@@ -298,6 +344,7 @@ final class Library: ObservableObject {
         candidate.games[index].steamAchievementsUnlocked = snapshot.unlocked
         candidate.games[index].steamAchievementsTotal = snapshot.total
         try commit(candidate)
+        steamConfirmed[data.games[index].id] = Date(timeIntervalSince1970: TimeInterval(snapshot.fetchedAt))
     }
     private func launchDirect(_ game: Game) {
         guard !running.contains(game.id) else { return }
@@ -408,10 +455,23 @@ final class Library: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func startActivity(_ game: Game, processID: Int32) { diagnostics.write("Avvio", "Processo attivo PID \(processID)", game: game); activity.start(game); achievements.start(game, processID: processID) }
+    private func startActivity(_ game: Game, processID: Int32) {
+        diagnostics.write("Avvio", "Processo attivo PID \(processID)", game: game)
+        experience.update(game) { $0.lastPlayed = Date(); $0.lastLaunched = Date() }
+        gameStatus[game.id] = "Processo avviato · conferma il funzionamento nella pagina del gioco"
+        if experience.preferences.pauseWhilePlaying, pausedForGame.isEmpty {
+            pausedForGame = downloads.jobs.filter { [.active, .queued].contains($0.state) }.map(\.id)
+            downloads.pauseAll()
+        }
+        activity.start(game); achievements.start(game, processID: processID)
+    }
     private func stopActivity(_ game: Game) {
         diagnostics.write("Avvio", "Processo terminato", game: game)
         activity.stop(game); achievements.stop(game)
+        if running.count <= 1, !pausedForGame.isEmpty {
+            let resume = pausedForGame; pausedForGame = []
+            for id in resume { if downloads.jobs.first(where: { $0.id == id })?.state == .paused { downloads.resume(id) } }
+        }
         guard let owner = data.steamAccount?.steamID, game.steamAppID != nil else { return }
         Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -421,7 +481,9 @@ final class Library: ObservableObject {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
             guard data.steamAccount?.steamID == owner, FileManager.default.fileExists(atPath: root.appendingPathComponent("library.json").path) else { return }
-            if let snapshot = try? await managedSteam.playerSnapshot(game, expected: owner) { try? updateSteamSnapshot(snapshot) }
+            await syncCloud(game)
+            do { let snapshot = try await managedSteam.playerSnapshot(game, expected: owner); try updateSteamSnapshot(snapshot); steamConfirmed[game.id] = Date() }
+            catch { gameStatus[game.id] = "Ore Steam non ancora aggiornate. Riprova dalla pagina del gioco."; diagnostics.write("Steam", error.localizedDescription, game: game) }
         }
     }
     func restoreSteamAPI(_ game: Game) {
@@ -437,7 +499,10 @@ final class Library: ObservableObject {
     }
 
     func installSteam(_ game: Game, platform: InstallPlatform = .windows) {
-        downloads.enqueue(game, platform: platform, accountID: data.steamAccount?.steamID)
+        downloads.enqueue(game, platform: platform, accountID: data.steamAccount?.steamID, storageRoot: experience.preferences.storageRoot)
+        if experience.preferences.pauseWhilePlaying, !running.isEmpty, let job = downloads.jobs.last(where: { $0.game.id == game.id && $0.state == .queued }) {
+            pausedForGame.append(job.id); downloads.pause(job.id)
+        }
         installSelection = nil
     }
     private func performInstall(_ job: DownloadJob) async throws {
@@ -452,10 +517,12 @@ final class Library: ObservableObject {
         let runtime: String? = job.platform == .macOS ? nil : try await resolvedRuntime()
         installingJob = true
         defer { installingJob = false }
-        let (exe, directory, launch) = try await managedSteam.install(job.game, platform: job.platform, runtime: runtime, expected: job.accountID ?? data.steamAccount?.steamID)
+        managedSteam.bandwidthLimitKBPS = experience.preferences.bandwidthLimitKBPS
+        let (exe, directory, launch) = try await managedSteam.install(job.game, platform: job.platform, runtime: runtime, expected: job.accountID ?? data.steamAccount?.steamID, storageRoot: job.storageRoot)
         try Task.checkCancellation()
         var candidate = data
         guard let index = candidate.games.firstIndex(where: { $0.id == job.game.id }) else { throw DockError.message("Gioco rimosso dalla libreria durante il download.") }
+        candidate.games[index].storageContainer = job.platform == .windows ? URL(fileURLWithPath: launch.prefix).deletingLastPathComponent().path : URL(fileURLWithPath: directory).deletingLastPathComponent().path
         candidate.games[index].executablePath = exe
         candidate.games[index].installDirectory = directory
         candidate.games[index].managedLaunch = launch
@@ -491,6 +558,158 @@ final class Library: ObservableObject {
         var candidate = data
         candidate.games.removeAll { $0.id == game.id }
         do { try commit(candidate) } catch { self.error = error.localizedDescription }
+    }
+
+    func refreshSteamActivity(_ game: Game) async {
+        guard !refreshingStats.contains(game.id), let owner = data.steamAccount?.steamID else { return }
+        refreshingStats.insert(game.id); defer { refreshingStats.remove(game.id) }
+        do {
+            let deadline = ProcessInfo.processInfo.systemUptime + 90
+            while managedSteam.busy || managedSteam.preparing || signingIn {
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw DockError.message("Steam è occupato con un’altra operazione. Riprova tra poco.") }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            let snapshot = try await managedSteam.playerSnapshot(game, expected: owner)
+            try updateSteamSnapshot(snapshot)
+            gameStatus[game.id] = "Ore e conteggio trofei riletti da Steam"
+            achievements.flush()
+        } catch { gameStatus[game.id] = "Aggiornamento Steam non completato: " + error.localizedDescription }
+    }
+    func isBusy(_ game: Game) -> Bool {
+        running.contains(game.id) || preparingLaunch.contains(game.id) || maintenance.contains(game.id) || syncingSaves.contains(game.id) || downloads.jobs.contains { $0.game.id == game.id && [.active, .queued, .paused].contains($0.state) }
+    }
+    func cancelLaunch(_ game: Game) {
+        launchTasks[game.id]?.cancel()
+        if managedSteam.activeGame == game.id { managedSteam.cancel() }
+    }
+    func activateGame(_ game: Game) {
+        if let app = nativeApps[game.id] { app.activate(options: [.activateIgnoringOtherApps]) }
+        else if let pid = processes[game.id]?.processIdentifier, let app = NSRunningApplication(processIdentifier: pid) { app.activate(options: [.activateIgnoringOtherApps]) }
+        else { notice = "Il gioco è in esecuzione. Puoi tornarci con ⌘Tab o dal Dock." }
+    }
+    func syncCloud(_ game: Game) async {
+        guard !running.contains(game.id), !preparingLaunch.contains(game.id), !syncingSaves.contains(game.id), let owner = data.steamAccount?.steamID else { return }
+        syncingSaves.insert(game.id); defer { syncingSaves.remove(game.id) }
+        do {
+            let deadline = ProcessInfo.processInfo.systemUptime + 90
+            while managedSteam.busy || managedSteam.preparing || signingIn {
+                guard ProcessInfo.processInfo.systemUptime < deadline else { throw DockError.message("Sincronizzazione in attesa: un’altra operazione Steam è ancora attiva.") }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard data.steamAccount?.steamID == owner else { return }
+            cloudStatuses[game.id] = "Sincronizzazione dei salvataggi con Steam…"
+            let count = try await managedSteam.uploadCloudAfterPlay(game, expected: owner)
+            cloudStatuses[game.id] = count > 0 ? "\(count) salvataggi confermati su Steam Cloud" : "Nessun nuovo salvataggio Auto-Cloud da inviare"
+        } catch { cloudStatuses[game.id] = "Cloud da sincronizzare: " + error.localizedDescription; diagnostics.write("Cloud", error.localizedDescription, game: game) }
+    }
+    func resolveCloudConflict(_ game: Game, keepLocal: Bool) {
+        guard !isBusy(game), let owner = data.steamAccount?.steamID else { return }
+        maintenance.insert(game.id)
+        Task {
+            defer { maintenance.remove(game.id) }
+            do {
+                while managedSteam.busy || managedSteam.preparing || signingIn { try await Task.sleep(nanoseconds: 200_000_000) }
+                guard data.steamAccount?.steamID == owner else { return }
+                cloudStatuses[game.id] = "Conservo le copie prima di risolvere il conflitto…"
+                try await managedSteam.resolveCloudConflict(game, expected: owner, keepLocal: keepLocal)
+                cloudStatuses[game.id] = keepLocal ? "Copia locale inviata e verificata su Steam" : "Copia Steam ripristinata; precedenti file locali conservati nel backup"
+            } catch { cloudStatuses[game.id] = "Conflitto non risolto: " + error.localizedDescription }
+        }
+    }
+    func retryPendingCloud() {
+        guard let owner = data.steamAccount?.steamID else { return }
+        Task {
+            for game in data.games where game.steamAppID != nil {
+                if let id = game.steamAppID, FileManager.default.fileExists(atPath: managedSteam.cloudSessionURL(owner: owner, appID: id).path) { await syncCloud(game) }
+            }
+        }
+    }
+    func repair(_ game: Game) {
+        guard !isBusy(game), let appID = game.steamAppID, let directory = game.installDirectory, let owner = data.steamAccount?.steamID else { return }
+        maintenance.insert(game.id)
+        Task {
+            defer { maintenance.remove(game.id) }
+            do {
+                while managedSteam.busy || managedSteam.preparing || signingIn { try await Task.sleep(nanoseconds: 200_000_000) }
+                managedSteam.bandwidthLimitKBPS = experience.preferences.bandwidthLimitKBPS
+                gameStatus[game.id] = "Verifica dei file Steam in corso…"
+                let architecture = game.isNative ? ["-osarch", "64"] : ["-all-archs"]
+                _ = try await managedSteam.run(["-app", String(appID), "-os", game.isNative ? "macos" : "windows", "-dir", directory, "-validate"] + architecture, expected: owner)
+                if !game.isNative {
+                    gameStatus[game.id] = "Verifica dei componenti Windows…"
+                    let runtime = try await resolvedRuntime()
+                    try await managedSteam.prepareInstalledGame(game, runtime: runtime, expected: owner)
+                }
+                gameStatus[game.id] = "Verifica e riparazione completate. Puoi avviare il gioco."
+            } catch { self.error = "Riparazione: " + error.localizedDescription; gameStatus[game.id] = "Riparazione non completata" }
+        }
+    }
+    func canUninstall(_ game: Game) -> Bool {
+        guard let appID = game.steamAppID, let directory = game.installDirectory, game.managedLaunch != nil, game.detectedByScan != true else { return false }
+        let container = game.storageContainer.map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Containers/Steam/\(appID)")
+        let expected = game.isNative ? container.appendingPathComponent("macOS") : container.appendingPathComponent("prefix/drive_c/Program Files/MacGameDeck/Games/\(appID)")
+        return URL(fileURLWithPath: directory).standardizedFileURL == expected.standardizedFileURL
+    }
+    func chooseStorage() {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.title = "Scegli dove installare i nuovi giochi"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        experience.settings { $0.storageRoot = url.path }
+    }
+    func moveInstallation(_ game: Game) {
+        guard !isBusy(game), canUninstall(game), let id = game.steamAppID, let launch = game.managedLaunch else { return }
+        guard mods.mods(for: game).isEmpty else {
+            error = "Questo gioco ha mod registrate: il trasferimento automatico dei loro percorsi non è ancora supportato. La copia attuale resta disponibile."; return
+        }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.title = "Scegli il disco o la cartella di destinazione"
+        panel.message = "La copia originale viene conservata. Verrà indicato il percorso per rimuoverla dopo la verifica."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        moveInstallation(game, to: destination)
+    }
+    func moveInstallation(_ game: Game, to destination: URL) {
+        guard !isBusy(game), canUninstall(game), let id = game.steamAppID, let launch = game.managedLaunch else { return }
+        guard mods.mods(for: game).isEmpty else { error = "Il trasferimento con mod registrate non è ancora supportato."; return }
+        maintenance.insert(game.id)
+        Task {
+            defer { maintenance.remove(game.id) }
+            do {
+                let source = game.storageContainer.map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent("Containers/Steam/\(id)")
+                let target = try GameStorage.container(appID: id, root: root, selected: destination.path)
+                gameStatus[game.id] = "Trasferimento e verifica della copia in corso…"
+                try await Task.detached(priority: .utility) { try GameStorage.copyVerified(from: source, to: target) }.value
+                var candidate = data
+                guard let index = candidate.games.firstIndex(where: { $0.id == game.id }) else { throw DockError.message("Gioco non più presente nella libreria.") }
+                candidate.games[index].executablePath = try GameStorage.remap(game.executablePath, from: source, to: target)
+                candidate.games[index].installDirectory = try game.installDirectory.map { try GameStorage.remap($0, from: source, to: target) }
+                candidate.games[index].managedLaunch = ManagedLaunch(prefix: game.isNative ? "" : try GameStorage.remap(launch.prefix, from: source, to: target), arguments: launch.arguments, workingDirectory: try GameStorage.remap(launch.workingDirectory, from: source, to: target), platform: launch.platform)
+                candidate.games[index].storageContainer = target.path
+                try commit(candidate)
+                gameStatus[game.id] = "Trasferimento completato. Copia originale conservata in " + source.path
+            } catch { self.error = "Trasferimento: " + error.localizedDescription }
+        }
+    }
+    func uninstall(_ game: Game, revealBackup: Bool = true) {
+        guard !isBusy(game), canUninstall(game), let directory = game.installDirectory else { return }
+        maintenance.insert(game.id)
+        Task {
+            defer { maintenance.remove(game.id) }
+            do {
+                let source = URL(fileURLWithPath: directory)
+                try SteamCloudRestore.rejectSymlinks(source)
+                let backup = root.appendingPathComponent("Uninstalled/\(UUID().uuidString)/Game")
+                try FileManager.default.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try await Task.detached(priority: .utility) { try FileManager.default.moveItem(at: source, to: backup) }.value
+                do {
+                    var candidate = data
+                    guard let index = candidate.games.firstIndex(where: { $0.id == game.id }) else { throw DockError.message("Gioco non più presente nella libreria.") }
+                    candidate.games[index].installDirectory = nil; candidate.games[index].executablePath = ""; candidate.games[index].managedLaunch = nil
+                    try commit(candidate)
+                } catch { try? FileManager.default.moveItem(at: backup, to: source); throw error }
+                gameStatus[game.id] = "Disinstallato. Backup locale: " + backup.path
+                if revealBackup { NSWorkspace.shared.activateFileViewerSelecting([backup]) }
+            } catch { self.error = "Disinstallazione: " + error.localizedDescription }
+        }
     }
 
     private func resolvedRuntime() async throws -> String {

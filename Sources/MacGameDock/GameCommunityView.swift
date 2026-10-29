@@ -30,14 +30,21 @@ enum WorkshopInput {
 
 struct GameCommunityView: View {
     let game: Game
+    var initialTab = "Workshop"
     @EnvironmentObject var library: Library
     @EnvironmentObject var steam: ManagedSteam
     @EnvironmentObject var social: SteamSocial
     @EnvironmentObject var monitor: AchievementMonitor
+    @EnvironmentObject var mods: WorkshopLibrary
     @Environment(\.dismiss) private var dismiss
-    @State private var tab = "Workshop"
+    @State private var tab: String
+    init(game: Game, initialTab: String = "Workshop") {
+        self.game = game; self.initialTab = initialTab
+        _tab = State(initialValue: initialTab)
+    }
     @State private var inventory: SteamCloudInventory?
     @State private var checkingCloud = false
+    @State private var resolvingCloud = false
     @State private var cloudMessage = ""
     @State private var player: SteamPlayerSnapshot?
     @State private var playerMessage = ""
@@ -62,6 +69,24 @@ struct GameCommunityView: View {
             Picker("Sezione", selection: $tab) { Text("Workshop e mod").tag("Workshop"); Text("Trofei Steam").tag("Trofei"); Text("Steam Cloud").tag("Cloud") }.pickerStyle(.segmented)
             if let id = game.steamAppID {
                 if tab == "Workshop" {
+                    if !mods.mods(for: game).isEmpty {
+                        DisclosureGroup("Mod installate (\(mods.mods(for: game).count))") {
+                            ForEach(mods.mods(for: game)) { mod in
+                                HStack {
+                                    Text(mod.title).lineLimit(1)
+                                    Text(mod.enabled ? (FileManager.default.fileExists(atPath: mods.folder(mod).path) ? "File presenti nella cartella mod" : "Cartella spostata o rimossa") : "Disattivata").font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Mostra file") { NSWorkspace.shared.open(mods.folder(mod)) }
+                                    Button(mod.enabled ? "Disattiva" : "Riattiva") {
+                                        do { try mods.toggle(mod); message = mod.enabled ? "Mod spostata fuori dalla cartella del gioco." : "Mod ripristinata nella cartella scelta." }
+                                        catch { message = error.localizedDescription }
+                                    }.disabled(library.isBusy(game))
+                                }.padding(.vertical, 5)
+                            }
+                            Text("La presenza dei file non garantisce che il gioco abbia caricato la mod. Loader, dipendenze e ordine di caricamento restano specifici del gioco.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let error = mods.error { Text(error).font(.caption).foregroundStyle(.orange) }
                     HStack {
                         TextField("Cerca mod nel Workshop", text: $workshopSearch).textFieldStyle(.roundedBorder).onSubmit { Task { await loadWorkshop(reset: true) } }
                         Button("Cerca", systemImage: "magnifyingglass") { Task { await loadWorkshop(reset: true) } }.disabled(loadingWorkshop)
@@ -94,9 +119,15 @@ struct GameCommunityView: View {
                     if let folder = downloaded { HStack { Button("Mostra download") { NSWorkspace.shared.open(folder) }; Button("Installa in cartella mod…") { installMod(folder) }.disabled(library.running.contains(game.id)) } }
                     if !message.isEmpty { Text(message).font(.caption).textSelection(.enabled) }
                 } else if tab == "Cloud" {
-                    Text("I salvataggi Auto-Cloud supportati vengono confrontati prima dell’avvio: la copia più recente ha priorità. I file locali sostituiti sono conservati in un backup. Questa pagina mostra anche i file Steam API, il cui ripristino diretto non è ancora supportato.").foregroundStyle(.secondary)
+                    Text("I salvataggi Auto-Cloud supportati vengono confrontati prima dell’avvio: la copia più recente ha priorità. I file locali sostituiti sono conservati in un backup. Alla chiusura i salvataggi Auto-Cloud modificati vengono inviati a Steam, con confronto delle copie e verifica dal server. I file Steam API senza percorso dichiarato non sono ancora supportati.").foregroundStyle(.secondary)
                     Button(checkingCloud ? "Caricamento…" : "Aggiorna elenco") { checkCloud() }
                         .disabled(checkingCloud || steam.busy || steam.preparing || library.signingIn || library.syncingSteam || library.running.contains(game.id))
+                    if let status = library.cloudStatuses[game.id] { Text(status).font(.callout).textSelection(.enabled) }
+                    HStack {
+                        Button("Sincronizza ora") { Task { await library.syncCloud(game) } }.disabled(library.isBusy(game))
+                        Button("Risolvi un conflitto…") { resolvingCloud = true }.disabled(library.isBusy(game))
+                        Button("Apri backup") { NSWorkspace.shared.open(library.root.appendingPathComponent("Cloud/Backups")) }
+                    }
                     if !cloudMessage.isEmpty { Text(cloudMessage).font(.caption).textSelection(.enabled) }
                     if let inventory {
                         Text("\(inventory.liveFiles.count) file nel cloud").font(.headline)
@@ -147,6 +178,11 @@ struct GameCommunityView: View {
                 }
             }
         }.padding(24).frame(minWidth: 850, minHeight: 640)
+        .confirmationDialog("Quale copia vuoi conservare?", isPresented: $resolvingCloud, titleVisibility: .visible) {
+            Button("Usa i salvataggi di questo Mac su Steam") { library.resolveCloudConflict(game, keepLocal: true) }
+            Button("Usa i salvataggi Steam su questo Mac") { library.resolveCloudConflict(game, keepLocal: false) }
+            Button("Annulla", role: .cancel) {}
+        } message: { Text("Prima di sostituire i file, MacGameDeck conserva le copie precedenti nei backup. La scelta riguarda i salvataggi Auto-Cloud supportati di questo gioco.") }
         .task(id: tab + (library.data.steamAccount?.steamID ?? "")) {
             guard library.data.steamAccount != nil else { return }
             do {
@@ -251,6 +287,13 @@ struct GameCommunityView: View {
             }
             let destination = target.appendingPathComponent("MacGameDeck-Mod-\(source.deletingLastPathComponent().lastPathComponent)-\(UUID().uuidString.prefix(8))")
             try FileManager.default.copyItem(at: source, to: destination)
+            do {
+                let itemID = source.deletingLastPathComponent().lastPathComponent
+                try mods.register(game: game, itemID: itemID, title: workshopItems.first(where: { $0.id == itemID })?.title ?? "Mod " + itemID, destination: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
             message = "File copiati in \(destination.path). Segui le istruzioni della mod per l'attivazione."
         } catch { message = error.localizedDescription }
     }

@@ -1,8 +1,10 @@
 import AppKit
+import Combine
 import GameController
 import SwiftUI
 
 struct ControllersView: View {
+    @EnvironmentObject var experience: GameExperience
     @State private var controllers: [GCController] = []
     @State private var testing = false
     @State private var readings: [String: String] = [:]
@@ -17,6 +19,7 @@ struct ControllersView: View {
                     Button("Impostazioni controller") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Game-Controllers-Settings.extension")!) }
                     Toggle("Test pulsanti e levette", isOn: $testing)
                 }
+                Toggle("Inverti Conferma e Indietro nell’interfaccia", isOn: Binding(get: { experience.preferences.swapControllerConfirmBack == true }, set: { value in experience.settings { $0.swapControllerConfirmBack = value } }))
                 if controllers.isEmpty { Label("Nessun controller compatibile rilevato", systemImage: "gamecontroller") }
                 ForEach(controllers, id: \.self) { controller in
                     GroupBox(controller.vendorName ?? "Controller") {

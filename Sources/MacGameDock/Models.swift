@@ -26,6 +26,7 @@ struct Game: Identifiable, Codable {
     var steamAchievementsUnlocked: Int? = nil
     var steamAchievementsTotal: Int? = nil
     var iconHash: String?
+    var storageContainer: String? = nil
     var isFamilyShared: Bool { !(familyOwners ?? []).isEmpty }
     var isInstalled: Bool {
         let path = managedLaunch == nil ? (installDirectory ?? executablePath) : executablePath

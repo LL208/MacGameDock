@@ -1,22 +1,50 @@
 --- a/DepotDownloader/AccountSettingsStore.cs
 +++ b/DepotDownloader/AccountSettingsStore.cs
-@@ -45 +45 @@
+@@ -42,18 +42,18 @@
+         }
+ 
+         public static AccountSettingsStore Instance;
 -        static readonly IsolatedStorageFile IsolatedStorage = IsolatedStorageFile.GetUserStoreForAssembly();
 +        // MacGameDeck supplies a private, temporary working directory.
-@@ -52 +52 @@
+ 
+         public static void LoadFromFile(string filename)
+         {
+             if (Loaded)
+                 throw new Exception("Config already loaded");
+ 
 -            if (IsolatedStorage.FileExists(filename))
 +            if (File.Exists(filename))
-@@ -56 +56 @@
+             {
+                 try
+                 {
 -                    using var fs = IsolatedStorage.OpenFile(filename, FileMode.Open, FileAccess.Read);
 +                    using var fs = File.Open(filename, FileMode.Open, FileAccess.Read);
-@@ -81 +81 @@
+                     using var ds = new DeflateStream(fs, CompressionMode.Decompress);
+                     Instance = Serializer.Deserialize<AccountSettingsStore>(ds);
+                 }
+@@ -78,7 +78,7 @@
+ 
+             try
+             {
 -                using var fs = IsolatedStorage.OpenFile(Instance.FileName, FileMode.Create, FileAccess.Write);
 +                using var fs = File.Open(Instance.FileName, FileMode.Create, FileAccess.Write);
+                 using var ds = new DeflateStream(fs, CompressionMode.Compress);
+                 Serializer.Serialize(ds, Instance);
+             }
 --- a/DepotDownloader/ContentDownloader.cs
 +++ b/DepotDownloader/ContentDownloader.cs
-@@ -164,0 +165 @@
+@@ -162,6 +162,7 @@
+                 EAppInfoSection.Extended => "extended",
+                 EAppInfoSection.Config => "config",
+                 EAppInfoSection.Depots => "depots",
 +                EAppInfoSection.UFS => "ufs",
-@@ -328,0 +330,56 @@
+                 _ => throw new NotImplementedException(),
+             };
+             var section_kv = appinfo.Children.Where(c => c.Name == section_key).FirstOrDefault();
+@@ -326,6 +327,64 @@
+ 
+             return true;
+         }
 +
 +        public static async Task ExportDeckLibraryAsync(string destination)
 +        {
@@ -72,16 +100,195 @@
 +        public static Task RunDeckService(string directory, int parentPid) => steam3.RunDeckService(directory, parentPid);
 +        public static Task DownloadDeckCloud(uint appId, string request, string destination) => steam3.DownloadDeckCloud(appId, request, destination);
 +        public static Task ExportDeckPlayer(uint appId, string destination) => steam3.ExportDeckPlayer(appId, destination);
++        public static Task UploadDeckCloud(uint appId, string requestFile) => steam3.UploadDeckCloud(appId, requestFile);
++
 +        public static Task ExportDeckCloudInventory(uint appId, string destination) => steam3.ExportDeckCloudInventory(appId, destination);
-@@ -544,0 +602,3 @@
+ 
+         public static void ShutdownSteam3()
+         {
+@@ -542,11 +601,16 @@
+                 }
+             }
+ 
 +            if (infos.Count != depotIdsFound.Count || infos.Count == 0)
 +                throw new ContentDownloaderException("Not all required depots are accessible. Installation is incomplete.");
 +
-@@ -549,0 +610,2 @@
+             Console.WriteLine();
+ 
+             try
+             {
+                 await DownloadSteam3Async(infos).ConfigureAwait(false);
 +                DeckIntegration.Metadata(appId, GetSteam3AppSection(appId, EAppInfoSection.Common),
 +                    GetSteam3AppSection(appId, EAppInfoSection.Config), Config.InstallDirectory);
-@@ -1327,0 +1390 @@
+             }
+             catch (OperationCanceledException)
+             {
+@@ -1203,6 +1267,7 @@
+                 do
+                 {
+                     cts.Token.ThrowIfCancellationRequested();
++                    await DeckBandwidth.WaitAsync(chunk.CompressedLength, cts.Token).ConfigureAwait(false);
+ 
+                     Server connection = null;
+ 
+@@ -1325,6 +1390,7 @@
+                 downloadCounter.totalBytesUncompressed += chunk.UncompressedLength;
+ 
+                 Ansi.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
 +                DeckIntegration.Progress(downloadCounter.totalBytesUncompressed, downloadCounter.completeDownloadSize);
+             }
+ 
+             if (remainingChunks == 0)
+--- /dev/null
++++ b/DepotDownloader/DeckBandwidth.cs
+@@ -0,0 +1,25 @@
++// This file is subject to the terms and conditions defined
++// in file 'LICENSE', which is part of this source code package.
++using System;
++using System.Diagnostics;
++using System.Threading;
++using System.Threading.Tasks;
++namespace DepotDownloader {
++    internal sealed class DeckBandwidthLimiter {
++        private readonly double bytesPerMillisecond;
++        private double next;
++        private readonly object gate = new();
++        internal DeckBandwidthLimiter(int kibibytesPerSecond) { bytesPerMillisecond = Math.Clamp(kibibytesPerSecond, 1, 1048576) * 1024.0 / 1000; }
++        internal double Reserve(uint bytes, double now) {
++            lock (gate) { next = Math.Max(now, next) + bytes / bytesPerMillisecond; return next - now; }
++        }
++        internal Task WaitAsync(uint bytes, CancellationToken cancellation) {
++            var delay = Reserve(bytes, Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency);
++            return Task.Delay(TimeSpan.FromMilliseconds(delay), cancellation);
++        }
++    }
++    internal static class DeckBandwidth {
++        private static readonly DeckBandwidthLimiter Limiter = int.TryParse(Environment.GetEnvironmentVariable("MACGAMEDECK_BANDWIDTH_KBPS"), out var limit) && limit > 0 ? new(limit) : null;
++        internal static Task WaitAsync(uint bytes, CancellationToken cancellation) => Limiter?.WaitAsync(bytes, cancellation) ?? Task.CompletedTask;
++    }
++}
+--- /dev/null
++++ b/DepotDownloader/DeckCloudUpload.cs
+@@ -0,0 +1,119 @@
++// This file is subject to the terms and conditions defined
++// in file 'LICENSE', which is part of this source code package.
++using System;
++using System.IO;
++using System.Linq;
++using System.Net.Http;
++using System.Security.Cryptography;
++using System.Text.Json;
++using System.Threading.Tasks;
++using SteamKit2;
++using SteamKit2.Internal;
++
++namespace DepotDownloader {
++    partial class Steam3Session {
++        internal sealed class DeckCloudUploadRequest {
++            public string steamID { get; set; }
++            public uint appID { get; set; }
++            public string changeNumber { get; set; }
++            public DeckCloudUploadFile[] files { get; set; }
++        }
++        internal sealed class DeckCloudUploadFile {
++            public string name { get; set; }
++            public string sha1 { get; set; }
++            public uint size { get; set; }
++            public ulong timestamp { get; set; }
++            public string source { get; set; }
++        }
++        internal static bool SafeCloudName(string name) => !string.IsNullOrEmpty(name) && !name.StartsWith('/') && !name.Contains('\\') && !name.Contains(':') && !name.Contains('\0') && !name.Split('/').Any(p => p == "." || p == "..");
++        internal static void ValidateUpload(DeckCloudUploadRequest request, uint appId, string owner) {
++            if (request == null || request.appID != appId || request.steamID != owner || !ulong.TryParse(request.changeNumber, out _) || request.files == null || request.files.Length == 0 || request.files.Length > 10000)
++                throw new DeckCloudException("invalid_request");
++            if (request.files.Select(f => f.name).Distinct().Count() != request.files.Length) throw new DeckCloudException("invalid_request");
++            foreach (var file in request.files) {
++                if (!SafeCloudName(file.name) || file.size > 268435456 || file.sha1 == null || file.sha1.Length != 40 || !file.sha1.All(Uri.IsHexDigit) || file.timestamp == 0 || file.timestamp > (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 300 || file.source == null || file.source.Contains('/') || file.source.Contains('\\') || file.source is "." or "..")
++                    throw new DeckCloudException("invalid_request");
++            }
++        }
++        public async Task UploadDeckCloud(uint appId, string requestFile) {
++            var request = JsonSerializer.Deserialize<DeckCloudUploadRequest>(File.ReadAllText(requestFile));
++            ValidateUpload(request, appId, steamUser.SteamID.ConvertToUInt64().ToString());
++            var directory = Path.GetDirectoryName(Path.GetFullPath(requestFile));
++            foreach (var file in request.files) {
++                var path = Path.Combine(directory, file.source);
++                var info = new FileInfo(path);
++                if (!info.Exists || info.LinkTarget != null || info.Length != file.size || !Convert.ToHexString(SHA1.HashData(File.ReadAllBytes(path))).Equals(file.sha1, StringComparison.OrdinalIgnoreCase)) throw new DeckCloudException("hash_mismatch");
++            }
++            var cloud = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Cloud>();
++            var current = await cloud.GetAppFileChangelist(new CCloud_GetAppFileChangelist_Request { appid = appId, synced_change_number = 0 });
++            if (current.Result != EResult.OK) throw new DeckCloudException("steam_" + current.Result);
++            if (current.Body.is_only_delta || current.Body.current_change_number.ToString() != request.changeNumber) throw new DeckCloudException("cloud_changed");
++            var machine = Environment.GetEnvironmentVariable("MACGAMEDECK_MACHINE_ID");
++            var clientId = Guid.TryParse(machine, out var machineGuid) ? BitConverter.ToUInt64(machineGuid.ToByteArray(), 0) : 0UL;
++            var begin = new CCloud_BeginAppUploadBatch_Request { appid = appId, machine_name = "MacGameDeck", client_id = clientId };
++            begin.files_to_upload.AddRange(request.files.Select(f => f.name));
++            DeckIntegration.Emit(new { type = "cloud_upload_phase", phase = "batch" });
++            var batch = await cloud.BeginAppUploadBatch(begin);
++            if (batch.Result != EResult.OK) throw new DeckCloudException("steam_" + batch.Result);
++            var success = false;
++            try {
++                // A batch may reserve a new change number. Compare file contents, not that reservation.
++                var locked = await cloud.GetAppFileChangelist(new CCloud_GetAppFileChangelist_Request { appid = appId, synced_change_number = 0 });
++                if (locked.Result != EResult.OK || locked.Body.is_only_delta) throw new DeckCloudException("cloud_changed");
++                string[] Snapshot(CCloud_GetAppFileChangelist_Response value) => value.files.Select(f => {
++                    var prefix = value.path_prefixes.Count == 0 ? "" : value.path_prefixes[(int)f.path_prefix_index];
++                    return prefix + "/" + f.file_name + ":" + Convert.ToHexString(f.sha_file) + ":" + f.persist_state + ":" + f.time_stamp;
++                }).OrderBy(v => v, StringComparer.Ordinal).ToArray();
++                if (!Snapshot(current.Body).SequenceEqual(Snapshot(locked.Body))) throw new DeckCloudException("cloud_changed");
++                using var http = HttpClientFactory.CreateHttpClient(false); http.Timeout = TimeSpan.FromSeconds(90);
++                foreach (var file in request.files) {
++                    var bytes = File.ReadAllBytes(Path.Combine(directory, file.source));
++                    if (bytes.Length != file.size || !Convert.ToHexString(SHA1.HashData(bytes)).Equals(file.sha1, StringComparison.OrdinalIgnoreCase)) throw new DeckCloudException("hash_mismatch");
++                    var sha = Convert.FromHexString(file.sha1);
++                    DeckIntegration.Emit(new { type = "cloud_upload_phase", phase = "file_begin" });
++                    var upload = await cloud.ClientBeginFileUpload(new CCloud_ClientBeginFileUpload_Request {
++                        appid = appId, filename = file.name, file_size = file.size, raw_file_size = file.size, file_sha = sha,
++                        time_stamp = file.timestamp, platforms_to_sync = uint.MaxValue, can_encrypt = false, upload_batch_id = batch.Body.batch_id
++                    });
++                    if (upload.Result == EResult.DuplicateRequest) {
++                        // Steam deduplicates an already stored payload. Accept only an exact remote hash/size match.
++                        var stored = current.Body.files.FirstOrDefault(f => {
++                            var prefix = current.Body.path_prefixes.Count == 0 ? "" : current.Body.path_prefixes[(int)f.path_prefix_index];
++                            var name = prefix + (prefix.Length == 0 || prefix.EndsWith('/') || prefix.EndsWith('%') ? "" : "/") + f.file_name;
++                            return name == file.name && (int)f.persist_state == 0 && f.raw_file_size == file.size && Convert.ToHexString(f.sha_file).Equals(file.sha1, StringComparison.OrdinalIgnoreCase);
++                        });
++                        if (stored == null) throw new DeckCloudException("cloud_changed");
++                        DeckIntegration.Emit(new { type = "cloud_upload_phase", phase = "already_stored" });
++                        continue;
++                    }
++                    if (upload.Result != EResult.OK) throw new DeckCloudException("steam_" + upload.Result);
++                    if (upload.Body.encrypt_file) throw new DeckCloudException("unsupported_transfer");
++                    var transferred = false;
++                    try {
++                        foreach (var block in upload.Body.block_requests) {
++                            if (!block.use_https || !Uri.TryCreate("https://" + block.url_host + block.url_path, UriKind.Absolute, out var url) || url.Scheme != "https" || !string.IsNullOrEmpty(url.UserInfo) || block.block_offset > (ulong)bytes.Length || block.block_length > (ulong)bytes.Length - block.block_offset) throw new DeckCloudException("unsupported_transfer");
++                            // Valve EHTTPMethod: POST=3, PUT=4. Other methods cannot upload a save.
++                            var method = block.http_method switch { 3 => HttpMethod.Post, 4 => HttpMethod.Put, _ => throw new DeckCloudException("unsupported_transfer") };
++                            using var message = new HttpRequestMessage(method, url);
++                            message.Content = block.explicit_body_data.Length > 0 ? new ByteArrayContent(block.explicit_body_data) : new ByteArrayContent(bytes, checked((int)block.block_offset), checked((int)block.block_length));
++                            foreach (var header in block.request_headers) if (!message.Headers.TryAddWithoutValidation(header.name, header.value)) message.Content.Headers.TryAddWithoutValidation(header.name, header.value);
++                            using var reply = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead); reply.EnsureSuccessStatusCode();
++                        }
++                        transferred = true;
++                    } finally {
++                        DeckIntegration.Emit(new { type = "cloud_upload_phase", phase = "file_commit" });
++                        var commit = await cloud.ClientCommitFileUpload(new CCloud_ClientCommitFileUpload_Request { appid = appId, filename = file.name, file_sha = sha, transfer_succeeded = transferred });
++                        if (transferred && (commit.Result != EResult.OK || !commit.Body.file_committed)) throw new DeckCloudException("upload_unconfirmed");
++                    }
++                    DeckIntegration.Emit(new { type = "cloud_upload", appID = appId });
++                }
++                success = true;
++            } finally {
++                DeckIntegration.Emit(new { type = "cloud_upload_phase", phase = "batch_complete" });
++                var complete = await cloud.CompleteAppUploadBatchBlocking(new CCloud_CompleteAppUploadBatch_Request { appid = appId, batch_id = batch.Body.batch_id, batch_eresult = (uint)(success ? EResult.OK : EResult.Fail) });
++                if (success && complete.Result != EResult.OK) throw new DeckCloudException("upload_unconfirmed");
++            }
++            DeckIntegration.Emit(new { type = "cloud_upload_complete", appID = appId, count = request.files.Length });
++        }
++    }
++}
 --- /dev/null
 +++ b/DepotDownloader/DeckCommunity.cs
 @@ -0,0 +1,230 @@
@@ -442,24 +649,42 @@
 +}
 --- a/DepotDownloader/HttpClientFactory.cs
 +++ b/DepotDownloader/HttpClientFactory.cs
-@@ -3,0 +4 @@
+@@ -1,6 +1,7 @@
+ // This file is subject to the terms and conditions defined
+ // in file 'LICENSE', which is part of this source code package.
+ 
 +using System;
-@@ -17 +18,2 @@
+ using System.IO;
+ using System.Net.Http;
+ using System.Net.Http.Headers;
+@@ -14,16 +15,17 @@
+     // We don't know if the IPv6 stack is functional.
+     class HttpClientFactory
+     {
 -        public static HttpClient CreateHttpClient()
 +        public static HttpClient CreateHttpClient() => CreateHttpClient(true);
 +        public static HttpClient CreateHttpClient(bool redirects)
-@@ -21 +23,3 @@
+         {
+             var client = new HttpClient(new SocketsHttpHandler
+             {
 -                ConnectCallback = IPv4ConnectAsync
 +                ConnectCallback = IPv4ConnectAsync,
 +                UseCookies = false,
 +                AllowAutoRedirect = redirects
-@@ -23 +26,0 @@
+             });
 -
-@@ -26 +28,0 @@
+             var assemblyVersion = typeof(HttpClientFactory).Assembly.GetName().Version.ToString(fieldCount: 3);
+             client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DepotDownloader", assemblyVersion));
 -
+             return client;
+         }
+ 
 --- a/DepotDownloader/Program.cs
 +++ b/DepotDownloader/Program.cs
-@@ -161,0 +162,15 @@
+@@ -159,11 +159,78 @@
+ 
+             #endregion
+ 
 +            var libraryFile = GetParameter<string>(args, "-deck-library");
 +            if (libraryFile != null)
 +            {
@@ -475,7 +700,11 @@
 +                try { await ContentDownloader.RunDeckService(serviceDirectory, GetParameter<int>(args, "-deck-parentpid", 0)); return 0; }
 +                finally { ContentDownloader.ShutdownSteam3(); }
 +            }
-@@ -166,0 +182,45 @@
+             var appId = GetParameter(args, "-app", ContentDownloader.INVALID_APP_ID);
+             if (appId == ContentDownloader.INVALID_APP_ID)
+             {
+                 Console.WriteLine("Error: -app not specified!");
+                 return 1;
 +            }
 +
 +            var launchMetadata = GetParameter<string>(args, "-deck-launch-metadata");
@@ -496,6 +725,13 @@
 +                    else await ContentDownloader.ExportDeckWorkshop(appId, workshopFile, GetParameter<string>(args, "-deck-search"), GetParameter<uint>(args, "-deck-page", 1));
 +                    return 0;
 +                }
++                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
++                finally { ContentDownloader.ShutdownSteam3(); }
++            }
++            var cloudUpload = GetParameter<string>(args, "-deck-cloud-upload");
++            if (cloudUpload != null) {
++                if (!InitializeSteam(username, password)) return 1;
++                try { await ContentDownloader.UploadDeckCloud(appId, cloudUpload); return 0; }
 +                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
 +                finally { ContentDownloader.ShutdownSteam3(); }
 +            }
@@ -521,12 +757,24 @@
 +                try { await ContentDownloader.ExportDeckCloudInventory(appId, cloudInventory); return 0; }
 +                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
 +                finally { ContentDownloader.ShutdownSteam3(); }
+             }
+ 
+             var pubFile = GetParameter(args, "-pubfile", ContentDownloader.INVALID_MANIFEST_ID);
 --- a/DepotDownloader/Steam3Session.cs
 +++ b/DepotDownloader/Steam3Session.cs
-@@ -19 +19 @@
+@@ -16,7 +16,7 @@
+ 
+ namespace DepotDownloader
+ {
 -    class Steam3Session
 +    partial class Steam3Session
-@@ -65,4 +65,5 @@
+     {
+         public bool IsLoggedOn { get; private set; }
+ 
+@@ -62,10 +62,11 @@
+             this.logonDetails = details;
+             this.authenticatedUser = details.Username != null || ContentDownloader.Config.UseQrCode;
+ 
 -            var clientConfiguration = SteamConfiguration.Create(config =>
 -                config
 -                    .WithHttpClientFactory(HttpClientFactory.CreateHttpClient)
@@ -536,7 +784,13 @@
 +                var machine = Environment.GetEnvironmentVariable("MACGAMEDECK_MACHINE_ID");
 +                if (!string.IsNullOrEmpty(machine)) config.WithMachineInfoProvider(new DeckMachineInfoProvider(machine));
 +            });
-@@ -185,0 +187,35 @@
+ 
+             this.steamClient = new SteamClient(clientConfiguration);
+ 
+@@ -183,6 +184,41 @@
+             }
+         }
+ 
 +        public async Task<List<CFamilyGroups_GetSharedLibraryApps_Response.SharedApp>> DeckFamilyApps()
 +        {
 +            var service = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<FamilyGroups>();
@@ -572,7 +826,13 @@
 +            }
 +        }
 +
-@@ -348,0 +385,147 @@
+         public async Task RequestPackageInfo(IEnumerable<uint> packageIds)
+         {
+             var packages = packageIds.ToList();
+@@ -346,6 +382,153 @@
+             throw new Exception($"EResult {(int)details.Result} ({details.Result}) while retrieving file details for pubfile {pubFile}.");
+         }
+ 
 +
 +        // Read-only cloud preflight for MacGameDeck. No URLs, authorization headers or save contents are exported.
 +        public async Task ExportDeckCloudInventory(uint appId, string destination)
@@ -720,21 +980,48 @@
 +                fetchedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
 +            System.IO.File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(value));
 +        }
-@@ -447 +630 @@
+ 
+         public async Task<SteamCloud.UGCDetailsCallback> GetUGCDetails(UGCHandle ugcHandle)
+         {
+@@ -444,7 +627,7 @@
+                             _ = AccountSettingsStore.Instance.GuardData.TryGetValue(logonDetails.Username, out var guarddata);
+                             authSession = await steamClient.Authentication.BeginAuthSessionViaCredentialsAsync(new AuthSessionDetails
+                             {
 -                                DeviceFriendlyName = nameof(DepotDownloader),
 +                                DeviceFriendlyName = "MacGameDeck",
-@@ -474 +657 @@
+                                 Username = logonDetails.Username,
+                                 Password = logonDetails.Password,
+                                 IsPersistentSession = ContentDownloader.Config.RememberPassword,
+@@ -471,7 +654,7 @@
+                         {
+                             var session = await steamClient.Authentication.BeginAuthSessionViaQRAsync(new AuthSessionDetails
+                             {
 -                                DeviceFriendlyName = nameof(DepotDownloader),
 +                                DeviceFriendlyName = "MacGameDeck",
-@@ -668,0 +852,5 @@
+                                 IsPersistentSession = ContentDownloader.Config.RememberPassword,
+                             });
+ 
+@@ -666,6 +849,11 @@
+                 return;
+             }
+ 
 +            if (!DeckIntegration.Account(steamUser.SteamID.ConvertToUInt64().ToString(), logonDetails.Username))
 +            {
 +                Abort(false);
 +                return;
 +            }
-@@ -704,0 +893,5 @@
+             Console.WriteLine(" Done!");
+ 
+             this.seq++;
+@@ -702,6 +890,11 @@
+ 
+         private static void DisplayQrCode(string challengeUrl)
+         {
 +            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MACGAMEDECK_PROTOCOL")))
 +            {
 +                DeckIntegration.Emit(new { type = "qr", url = challengeUrl });
 +                return;
 +            }
+             // Encode the link as a QR code
+             using var qrGenerator = new QRCodeGenerator();
+             var qrCodeData = qrGenerator.CreateQrCode(challengeUrl, QRCodeGenerator.ECCLevel.L);

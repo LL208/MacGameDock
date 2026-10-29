@@ -2,3 +2,8 @@
 .swiftpm/
 dist/
 .DS_Store
+
+# Local compiler products and Xcode user state
+**/bin/
+**/obj/
+**/xcuserdata/

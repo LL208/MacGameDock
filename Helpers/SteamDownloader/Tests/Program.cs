@@ -30,3 +30,23 @@ foreach(var type in new[]{"ACHIEVEMENTS","BITS","4"}){
  try {build.Invoke(null,new object[]{(uint)10,(ulong)76561198000000000,current,new[]{"UNKNOWN"}});throw new Exception("Unknown accepted");}catch(TargetInvocationException){}
 }
 Console.WriteLine("Steam schema/StoreStats regression: text and numeric types, preservation of existing bits, no reset, unknown-name rejection passed without network.");
+
+var uploadType=session.GetNestedType("DeckCloudUploadRequest",BindingFlags.NonPublic);
+var validateUpload=session.GetMethod("ValidateUpload",BindingFlags.NonPublic|BindingFlags.Static);
+string UploadJson(string name,string source,string owner="76561198000000000") => System.Text.Json.JsonSerializer.Serialize(new {steamID=owner,appID=10,changeNumber="1",files=new[]{new{name,source,sha1=new string('a',40),size=4,timestamp=1700000000}}});
+void Validate(string json,bool expected) {
+ var value=System.Text.Json.JsonSerializer.Deserialize(json,uploadType);
+ try {validateUpload.Invoke(null,new[]{value,(object)(uint)10,"76561198000000000"});if(!expected)throw new Exception("Unsafe cloud upload accepted");}
+ catch(TargetInvocationException){if(expected)throw;}
+}
+Validate(UploadJson("%GameInstall%Saves/slot.dat","0.save"),true);
+Validate(UploadJson("../outside","0.save"),false);
+Validate(UploadJson("save.dat","../outside"),false);
+Validate(UploadJson("save.dat","0.save","76561198000000001"),false);
+Console.WriteLine("Cloud upload request validation: account isolation, safe names and staging containment passed without network.");
+var limiterType=assembly.GetType("DepotDownloader.DeckBandwidthLimiter");
+var limiter=Activator.CreateInstance(limiterType,BindingFlags.Instance|BindingFlags.NonPublic,null,new object[]{1024},null);
+var reserve=limiterType.GetMethod("Reserve",BindingFlags.Instance|BindingFlags.NonPublic);
+double Reserve(uint bytes,double now) => (double)reserve.Invoke(limiter,new object[]{bytes,now});
+if(Math.Abs(Reserve(1048576,0)-1000)>0.001 || Math.Abs(Reserve(1048576,0)-2000)>0.001 || Math.Abs(Reserve(1048576,5000)-1000)>0.001) throw new Exception("Bandwidth reservations do not bound aggregate parallel throughput");
+Console.WriteLine("Aggregate bandwidth limiter: concurrent reservations and idle recovery passed without network or sleeps.");

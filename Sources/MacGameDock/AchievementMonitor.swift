@@ -65,7 +65,7 @@ final class AchievementMonitor: ObservableObject {
     private var nextRetry = 0.0
     private var preparedBaselines: [UUID: Set<String>] = [:]
     private var disabled: Set<Int> = []
-    private var pending: [AchievementEvent] = []
+    @Published private(set) var pending: [AchievementEvent] = []
     private var timer: Timer?
     private var flushing = false
     private let root: URL
@@ -172,6 +172,10 @@ final class AchievementMonitor: ObservableObject {
             if !events.isEmpty { saveJournal() }
         }
         flush()
+    }
+    func pendingCount(_ game: Game, owner: String?) -> Int {
+        guard let owner, let appID = game.steamAppID else { return 0 }
+        return pending.filter { $0.owner == owner && $0.appID == appID }.count
     }
     func flush() {
         guard !flushing, ProcessInfo.processInfo.systemUptime >= nextRetry, social.connected, let owner = social.profile?.steamID, let first = pending.first(where: { $0.owner == owner }) else { return }

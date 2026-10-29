@@ -231,6 +231,7 @@ final class ManagedSteam: ObservableObject {
     @Published var downloadedBytes: Double = 0
     @Published var totalBytes: Double = 0
     @Published var bytesPerSecond: Double = 0
+    var bandwidthLimitKBPS: Int?
     private var lastProgress: (Date, Double)?
     let root: URL
     private let helperProvider: (() throws -> URL)?
@@ -264,6 +265,8 @@ final class ManagedSteam: ObservableObject {
         hasSavedSession = true
         savedAccountID = account.0
     }
+    private(set) var activeOperationID: UUID?
+    func cancel(operationID: UUID) { if activeOperationID == operationID { cancel() } }
     func cancel() {
         cancelled = true; qr = nil
         guard let current = process, current.isRunning else { return }
@@ -321,26 +324,39 @@ final class ManagedSteam: ObservableObject {
         guard FileManager.default.fileExists(atPath: source.path), FileManager.default.fileExists(atPath: manifest.path) else {
             throw DockError.message("Motore Steam mancante: ricompila il progetto con le risorse incluse.")
         }
-        let hashes = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: manifest))
-        let target = root.appendingPathComponent("Tools/SteamRuntime")
+        let manifestBytes = try Data(contentsOf: manifest)
+        let hashes = try JSONDecoder().decode([String: String].self, from: manifestBytes)
+        let version = SHA256.hash(data: manifestBytes).map { String(format: "%02x", $0) }.joined()
+        let target = root.appendingPathComponent("Tools/SteamRuntime-" + String(version.prefix(16)))
         for (relative, expected) in hashes {
             let file = try DeckMetadata.contained(relative, in: source)
             let digest = SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined()
             guard digest == expected else { throw DockError.message("Il motore Steam non supera il controllo di integrità.") }
         }
-        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
-        try FileManager.default.copyItem(at: source, to: target)
         let executable = target.appendingPathComponent("DepotDownloader")
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let valid = hashes.allSatisfy { relative, expected in
+            guard let file = try? DeckMetadata.contained(relative, in: target), let bytes = try? Data(contentsOf: file) else { return false }
+            return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() == expected
+        }
+        if valid, FileManager.default.isExecutableFile(atPath: executable.path) { return executable }
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let staging = root.appendingPathComponent("Tools/.SteamRuntime-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try FileManager.default.copyItem(at: source, to: staging)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.appendingPathComponent("DepotDownloader").path)
+        if FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.moveItem(at: target, to: root.appendingPathComponent("Tools/SteamRuntime-backup-" + UUID().uuidString))
+        }
+        try FileManager.default.moveItem(at: staging, to: target)
         return executable
     }
-    func run(_ args: [String], expected: String?, forceQR: Bool = false, loginID: UInt32 = 1296516164) async throws -> String {
+    func run(_ args: [String], expected: String?, forceQR: Bool = false, loginID: UInt32 = 1296516164, operationID: UUID = UUID()) async throws -> String {
         guard !busy else { throw DockError.message("Attendi il completamento dell'operazione Steam in corso.") }
         try Task.checkCancellation()
+        activeOperationID = operationID
         busy = true; cancelled = false; sessionPersistenceFailure = nil; cloudFailure = nil; rejectedAccount = false; account = nil; qr = nil
         expectedAccount = expected; progress = 0; lastProgress = nil; bytesPerSecond = 0; downloadedBytes = 0; totalBytes = 0
-        defer { busy = false; process = nil; qr = nil; sessionDirectory = nil }
+        defer { activeOperationID = nil; busy = false; process = nil; qr = nil; sessionDirectory = nil }
         let executable = try helper()
         let session = forceQR ? nil : try SessionStore.read(root: root)
         if let expected, let session, expected != session.steamID { throw DockError.message("La sessione Steam appartiene a un altro account. Ricollega Steam.") }
@@ -355,6 +371,7 @@ final class ManagedSteam: ObservableObject {
         env["MACGAMEDECK_MACHINE_ID"] = try machineIdentity()
         env["DOTNET_ROOT"] = executable.deletingLastPathComponent().path
         env["DOTNET_ROLL_FORWARD"] = "LatestPatch"
+        env["MACGAMEDECK_BANDWIDTH_KBPS"] = bandwidthLimitKBPS.map(String.init)
         p.environment = env; p.standardInput = FileHandle.nullDevice
         let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
         let sink = LineSink { [weak self] bytes in Task { @MainActor in self?.event(bytes) } }
@@ -430,11 +447,11 @@ final class ManagedSteam: ObservableObject {
         guard snapshot.steamID == expected, snapshot.appID == id, (snapshot.minutes ?? 0) >= 0 else { throw DockError.message("Dati Steam appartenenti a un altro account o non validi.") }
         return snapshot
     }
-    func achievements(_ game: Game, expected: String) async throws -> SteamAchievementSnapshot {
+    func achievements(_ game: Game, expected: String, operationID: UUID = UUID()) async throws -> SteamAchievementSnapshot {
         guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
         let file = root.appendingPathComponent("achievements-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: file) }
-        _ = try await run(["-app", String(id), "-deck-achievements", file.path], expected: expected)
+        _ = try await run(["-app", String(id), "-deck-achievements", file.path], expected: expected, operationID: operationID)
         let value = try JSONDecoder().decode(SteamAchievementSnapshot.self, from: Data(contentsOf: file))
         try value.validate(owner: expected, appID: id)
         return value
@@ -459,7 +476,7 @@ final class ManagedSteam: ObservableObject {
         }
         guard inventory.liveFiles.isEmpty || mapped > 0 else { throw DockError.message("I file cloud di questo gioco usano Steam API senza un percorso Auto-Cloud dichiarato: ripristino automatico non ancora supportato.") }
         let entries = try SteamCloudRestore.plan(inventory, game: game)
-        guard !entries.isEmpty else { message = "Salvataggi locali aggiornati: avvio del gioco…"; return 0 }
+        guard !entries.isEmpty else { try captureCloudSession(inventory, game: game); message = "Salvataggi locali aggiornati: avvio del gioco…"; return 0 }
         let staging = root.appendingPathComponent("Cloud/Staging/\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -471,6 +488,7 @@ final class ManagedSteam: ObservableObject {
         let backups = root.appendingPathComponent("Cloud/Backups/\(expected)/\(inventory.appID)/\(UUID().uuidString)")
         try SteamCloudRestore.apply(entries, staging: staging, backups: backups)
         message = "\(entries.count) salvataggi cloud ripristinati. Copie locali precedenti conservate." + (mapped < inventory.liveFiles.count ? " I file Steam API senza percorso dichiarato non sono stati ripristinati." : "")
+        try captureCloudSession(inventory, game: game)
         return entries.count
     }
     func externalLaunch(_ game: Game, expected: String) async throws -> (String, ManagedLaunch) {
@@ -488,10 +506,15 @@ final class ManagedSteam: ObservableObject {
         let result = try metadata.select(in: location, platform: .windows)
         return (result.0.path, ManagedLaunch(prefix: root.appendingPathComponent("Containers/Steam/\(appID)/prefix").path, arguments: result.1, workingDirectory: result.2.path, platform: .windows))
     }
-    func install(_ game: Game, platform: InstallPlatform = .windows, runtime: String?, expected: String?) async throws -> (String, String, ManagedLaunch) {
+    func install(_ game: Game, platform: InstallPlatform = .windows, runtime: String?, expected: String?, storageRoot: String? = nil) async throws -> (String, String, ManagedLaunch) {
         guard let id = game.steamAppID else { throw DockError.message("Identificativo Steam mancante.") }
-        let prefix = root.appendingPathComponent("Containers/Steam/\(id)/prefix")
-        let directory = platform == .windows ? prefix.appendingPathComponent("drive_c/Program Files/MacGameDeck/Games/\(id)") : root.appendingPathComponent("Containers/Steam/\(id)/macOS")
+        let container: URL
+        if let existing = game.storageContainer {
+            container = URL(fileURLWithPath: existing)
+            guard FileManager.default.fileExists(atPath: container.deletingLastPathComponent().path) else { throw DockError.message("Il disco del gioco non è disponibile. Collegalo prima di continuare.") }
+        } else { container = try GameStorage.container(appID: id, root: root, selected: storageRoot) }
+        let prefix = container.appendingPathComponent("prefix")
+        let directory = platform == .windows ? prefix.appendingPathComponent("drive_c/Program Files/MacGameDeck/Games/\(id)") : container.appendingPathComponent("macOS")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         activeGame = game.id
         defer { activeGame = nil; preparing = false }

@@ -8,6 +8,7 @@ patch = root / "integration.patch"
 def run(reverse=False, dry=True):
     args = ["patch", "--batch", "-p1", "-i", str(patch)]
     if reverse: args += ["--reverse"]
+    else: args += ["--forward"]
     if dry: args += ["--dry-run"]
     return subprocess.run(args, cwd=root / "Source", capture_output=True, text=True)
 forward = run()

@@ -98,7 +98,8 @@ enum SteamCloudDiagnostic {
     static func message(code: String, errorType: String? = nil) -> String {
         let reason: String
         switch code {
-        case "cloud_changed": reason = "Il salvataggio cloud è cambiato durante la verifica; riprova prima di avviare il gioco."
+        case "cloud_changed": reason = "Il salvataggio cloud è cambiato durante la verifica. Le copie sono conservate; riprova la sincronizzazione."
+        case "upload_unconfirmed": reason = "Steam non ha confermato l’invio del salvataggio. La copia locale e il backup sono conservati."
         case "hash_mismatch": reason = "Il file scaricato non corrisponde al salvataggio cloud."
         case "unsupported_transfer": reason = "Steam usa un formato di trasferimento cloud non ancora supportato."
         case "partial_inventory": reason = "Steam ha restituito un inventario parziale; il confronto dei salvataggi non è possibile."

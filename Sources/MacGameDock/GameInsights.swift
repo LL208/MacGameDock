@@ -1,6 +1,15 @@
 import Foundation
 
-struct GameInsights {
+struct GameInsights: Codable {
+    var description = ""
+    var longDescription = ""
+    var developers: [String] = []
+    var genres: [String] = []
+    var categories: Set<Int>? = nil
+    var singlePlayer: Bool? { categories.map { $0.contains(2) } }
+    var localCoop: Bool? { categories.map { $0.contains(39) } }
+    var localSharedScreen: Bool? { categories.map { !$0.isDisjoint(with: [24, 37, 39]) } }
+    var onlineMultiplayer: Bool? { categories.map { !$0.isDisjoint(with: [36, 38]) } }
     let macAvailable: Bool
     let windowsAvailable: Bool
     let macRequirements: String
@@ -9,6 +18,8 @@ struct GameInsights {
         value.replacingOccurrences(of: "(?i)<br\\s*/?>|</li>", with: "\n", options: .regularExpression)
             .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&#39;", with: "’").replacingOccurrences(of: "&#039;", with: "’")
+            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
     }
     func requirement(_ label: String, for platform: InstallPlatform) -> String? {
         let text = Self.plain(platform == .macOS ? macRequirements : windowsRequirements)
@@ -35,11 +46,18 @@ struct GameInsights {
         }
         let mac = (body["mac_requirements"] as? [String: Any])?["minimum"] as? String ?? ""
         let windows = (body["pc_requirements"] as? [String: Any])?["minimum"] as? String ?? ""
-        return GameInsights(macAvailable: platforms["mac"] == true, windowsAvailable: platforms["windows"] == true,
+        var result = GameInsights(macAvailable: platforms["mac"] == true, windowsAvailable: platforms["windows"] == true,
                             macRequirements: mac, windowsRequirements: windows)
+        let short = body["short_description"] as? String ?? ""
+        result.description = String(plain(short.isEmpty ? (body["about_the_game"] as? String ?? "") : short).trimmingCharacters(in: .whitespacesAndNewlines).prefix(6000))
+        result.longDescription = String(plain(body["about_the_game"] as? String ?? body["detailed_description"] as? String ?? short).trimmingCharacters(in: .whitespacesAndNewlines).prefix(18000))
+        result.developers = body["developers"] as? [String] ?? []
+        result.genres = (body["genres"] as? [[String: Any]] ?? []).compactMap { $0["description"] as? String }
+        result.categories = (body["categories"] as? [[String: Any]]).map { Set($0.compactMap { $0["id"] as? Int }) }
+        return result
     }
-    static func fetch(appID: Int) async throws -> GameInsights {
-        let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appID)&l=english")!
+    static func fetch(appID: Int, language: String = "english") async throws -> GameInsights {
+        let url = URL(string: "https://store.steampowered.com/api/appdetails?appids=\(appID)&l=\(language == "italian" ? "italian" : "english")")!
         var request = URLRequest(url: url); request.timeoutInterval = 20
         let (bytes, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200, bytes.count < 8_000_000 else { throw DockError.message("Informazioni dello store non disponibili.") }

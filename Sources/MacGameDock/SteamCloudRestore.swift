@@ -76,7 +76,7 @@ enum SteamCloudRestore {
         guard folders.count == 1, let user = folders.first else { throw DockError.message("Profilo Wine ambiguo: impossibile individuare automaticamente i salvataggi.") }
         try rejectSymlinks(user); return user
     }
-    static func destination(_ remote: String, game: Game, inventory: SteamCloudInventory) throws -> URL {
+    static func destination(_ remote: String, game: Game, inventory: SteamCloudInventory, validatePattern: Bool = true) throws -> URL {
         guard let launch = game.managedLaunch else { throw DockError.message("Container del gioco non disponibile per Steam Cloud.") }
         let platform = game.isNative ? "macos" : "windows"
         var roots: [String: URL] = [:]
@@ -123,7 +123,7 @@ enum SteamCloudRestore {
             guard rule.text("recursive") == "1" || !tail.contains("/") else { return false }
             return fnmatch(rule.text("pattern") ?? "*", URL(fileURLWithPath: tail).lastPathComponent, 0) == 0
         }
-        guard allowed else { throw SteamCloudMappingError.outsideDeclaredPatterns }
+        guard !validatePattern || allowed else { throw SteamCloudMappingError.outsideDeclaredPatterns }
         return try safeDestination(root: mapping.1, relative: relative)
     }
     static func substitute(_ value: String, account: String) -> String {

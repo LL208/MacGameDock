@@ -202,6 +202,13 @@ namespace DepotDownloader
                 catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
+            var cloudUpload = GetParameter<string>(args, "-deck-cloud-upload");
+            if (cloudUpload != null) {
+                if (!InitializeSteam(username, password)) return 1;
+                try { await ContentDownloader.UploadDeckCloud(appId, cloudUpload); return 0; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                finally { ContentDownloader.ShutdownSteam3(); }
+            }
             var cloudRequest = GetParameter<string>(args, "-deck-cloud-download");
             var cloudDirectory = GetParameter<string>(args, "-deck-cloud-directory");
             var playerFile = GetParameter<string>(args, "-deck-player");
