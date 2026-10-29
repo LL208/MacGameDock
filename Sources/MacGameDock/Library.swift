@@ -29,6 +29,7 @@ final class Library: ObservableObject {
     lazy var social = SteamSocial(root: root, helperProvider: steamHelperProvider)
     lazy var managedSteam = ManagedSteam(root: root, helperProvider: steamHelperProvider)
     lazy var activity = PlayActivity(root: root)
+    lazy var gameSession = GameSessionCoordinator(library: self)
     lazy var experience = GameExperience(root: root)
     lazy var mods = WorkshopLibrary(root: root)
     @Published private(set) var launchStages: [UUID: String] = [:]
@@ -130,8 +131,8 @@ final class Library: ObservableObject {
 
     func addScanRoot() {
         let panel = NSOpenPanel()
-        panel.title = "Aggiungi una cartella giochi"
-        panel.message = "Scegli una libreria Steam (o steamapps), una cartella di manifest Epic, oppure una cartella con app GOG o goggame-*.info."
+        panel.title = L10n.text("Aggiungi una cartella giochi")
+        panel.message = L10n.text("Scegli una libreria Steam (o steamapps), una cartella di manifest Epic, oppure una cartella con app GOG o goggame-*.info.")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -222,8 +223,8 @@ final class Library: ObservableObject {
 
     func importGame(store: GameStore) {
         let panel = NSOpenPanel()
-        panel.title = "Scegli il gioco già installato"
-        panel.message = "Seleziona un eseguibile Windows (.exe) o un'app Mac (.app). Lo store serve a organizzare la libreria."
+        panel.title = L10n.text("Scegli il gioco già installato")
+        panel.message = L10n.text("Seleziona un eseguibile Windows (.exe) o un'app Mac (.app). Lo store serve a organizzare la libreria.")
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -257,6 +258,7 @@ final class Library: ObservableObject {
     @Published private(set) var preparingLaunch = Set<UUID>()
     func launch(_ game: Game) {
         guard !isBusy(game) else { return }
+        gameSession.captureDisplay(for: game, overwrite: true)
         diagnostics.write("Avvio", "Richiesta di avvio", game: game)
         if game.isInstalled, game.steamAppID != nil, game.launchURL?.hasPrefix("steam:") == true {
             preparingLaunch.insert(game.id)
@@ -348,6 +350,7 @@ final class Library: ObservableObject {
     }
     private func launchDirect(_ game: Game) {
         guard !running.contains(game.id) else { return }
+        gameSession.captureDisplay(for: game)
         if game.steamAppID != nil, !game.isInstalled {
             installSelection = game
             return
@@ -446,7 +449,7 @@ final class Library: ObservableObject {
             processes[game.id] = process
             logHandles[game.id] = handle
             running.insert(game.id)
-            do { try process.run(); startActivity(game, processID: process.processIdentifier) } catch {
+            do { try process.run(); startActivity(game, processID: process.processIdentifier, launchedExecutable: plan.executable.path) } catch {
                 processes.removeValue(forKey: game.id)
                 running.remove(game.id)
                 try? logHandles.removeValue(forKey: game.id)?.close()
@@ -455,7 +458,7 @@ final class Library: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func startActivity(_ game: Game, processID: Int32) {
+    private func startActivity(_ game: Game, processID: Int32, launchedExecutable: String? = nil) {
         diagnostics.write("Avvio", "Processo attivo PID \(processID)", game: game)
         experience.update(game) { $0.lastPlayed = Date(); $0.lastLaunched = Date() }
         gameStatus[game.id] = "Processo avviato · conferma il funzionamento nella pagina del gioco"
@@ -464,10 +467,12 @@ final class Library: ObservableObject {
             downloads.pauseAll()
         }
         activity.start(game); achievements.start(game, processID: processID)
+        gameSession.started(game, pid: processID, executable: launchedExecutable)
     }
     private func stopActivity(_ game: Game) {
         diagnostics.write("Avvio", "Processo terminato", game: game)
         activity.stop(game); achievements.stop(game)
+        gameSession.stopped(game)
         if running.count <= 1, !pausedForGame.isEmpty {
             let resume = pausedForGame; pausedForGame = []
             for id in resume { if downloads.jobs.first(where: { $0.id == id })?.state == .paused { downloads.resume(id) } }
@@ -583,9 +588,13 @@ final class Library: ObservableObject {
         if managedSteam.activeGame == game.id { managedSteam.cancel() }
     }
     func activateGame(_ game: Game) {
-        if let app = nativeApps[game.id] { app.activate(options: [.activateIgnoringOtherApps]) }
-        else if let pid = processes[game.id]?.processIdentifier, let app = NSRunningApplication(processIdentifier: pid) { app.activate(options: [.activateIgnoringOtherApps]) }
-        else { notice = "Il gioco è in esecuzione. Puoi tornarci con ⌘Tab o dal Dock." }
+        gameSession.focus(game)
+    }
+    func terminateGameProcess(_ game: Game) {
+        guard running.contains(game.id) else { return }
+        diagnostics.write("Avvio", "Terminazione richiesta dal menu di gioco", game: game)
+        if let app = nativeApps[game.id] { _ = app.terminate() }
+        else if let process = processes[game.id], process.isRunning { process.terminate() }
     }
     func syncCloud(_ game: Game) async {
         guard !running.contains(game.id), !preparingLaunch.contains(game.id), !syncingSaves.contains(game.id), let owner = data.steamAccount?.steamID else { return }
@@ -652,7 +661,7 @@ final class Library: ObservableObject {
     }
     func chooseStorage() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.title = "Scegli dove installare i nuovi giochi"
+        panel.title = L10n.text("Scegli dove installare i nuovi giochi")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         experience.settings { $0.storageRoot = url.path }
     }
@@ -662,8 +671,8 @@ final class Library: ObservableObject {
             error = "Questo gioco ha mod registrate: il trasferimento automatico dei loro percorsi non è ancora supportato. La copia attuale resta disponibile."; return
         }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.title = "Scegli il disco o la cartella di destinazione"
-        panel.message = "La copia originale viene conservata. Verrà indicato il percorso per rimuoverla dopo la verifica."
+        panel.title = L10n.text("Scegli il disco o la cartella di destinazione")
+        panel.message = L10n.text("La copia originale viene conservata. Verrà indicato il percorso per rimuoverla dopo la verifica.")
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         moveInstallation(game, to: destination)
     }

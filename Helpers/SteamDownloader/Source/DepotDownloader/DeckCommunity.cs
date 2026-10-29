@@ -47,9 +47,11 @@ namespace DepotDownloader
             foreach (var child in node.Children) { var found = FindStats(child, depth + 1); if (found != null) return found; }
             return null;
         }
+        private static readonly System.Threading.AsyncLocal<string> deckLanguage = new();
         private static string Localized(KeyValue node)
         {
-            return node["italian"].AsString() ?? node["english"].AsString() ?? node.Value ?? "";
+            var language = (deckLanguage.Value ?? Environment.GetEnvironmentVariable("MACGAMEDECK_LANGUAGE")) == "italian" ? "italian" : "english";
+            return node[language].AsString() ?? node["english"].AsString() ?? node.Value ?? "";
         }
         internal static List<DeckAchievement> ParseAchievements(uint appId, CMsgClientGetUserStatsResponse response)
         {
@@ -196,6 +198,7 @@ namespace DepotDownloader
                         using var document = JsonDocument.Parse(File.ReadAllText(file)); var command = document.RootElement;
                         if (command.GetProperty("steamID").GetString() != steamUser.SteamID.ConvertToUInt64().ToString()) throw new DeckCloudException("wrong_account");
                         var kind = command.GetProperty("kind").GetString(); var appId = command.TryGetProperty("appID", out var app) ? app.GetUInt32() : 0;
+                        deckLanguage.Value = command.TryGetProperty("language", out var language) && language.GetString() == "italian" ? "italian" : "english";
                         switch (kind)
                         {
                             case "presence":

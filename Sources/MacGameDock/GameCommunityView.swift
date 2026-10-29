@@ -29,6 +29,7 @@ enum WorkshopInput {
 }
 
 struct GameCommunityView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     let game: Game
     var initialTab = "Workshop"
     @EnvironmentObject var library: Library
@@ -65,8 +66,8 @@ struct GameCommunityView: View {
     @State private var message = ""
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { Text(game.title).font(.title2.bold()); Spacer(); Button("Chiudi") { dismiss() } }
-            Picker("Sezione", selection: $tab) { Text("Workshop e mod").tag("Workshop"); Text("Trofei Steam").tag("Trofei"); Text("Steam Cloud").tag("Cloud") }.pickerStyle(.segmented)
+            HStack { Text(game.title).font(.title2.bold()); Spacer(); Button(L10n.text("Chiudi")) { dismiss() } }
+            Picker(L10n.text("Sezione"), selection: $tab) { Text(L10n.text("Workshop e mod")).tag("Workshop"); Text(L10n.text("Trofei Steam")).tag("Trofei"); Text(L10n.text("Steam Cloud")).tag("Cloud") }.pickerStyle(.segmented)
             if let id = game.steamAppID {
                 if tab == "Workshop" {
                     if !mods.mods(for: game).isEmpty {
@@ -74,77 +75,77 @@ struct GameCommunityView: View {
                             ForEach(mods.mods(for: game)) { mod in
                                 HStack {
                                     Text(mod.title).lineLimit(1)
-                                    Text(mod.enabled ? (FileManager.default.fileExists(atPath: mods.folder(mod).path) ? "File presenti nella cartella mod" : "Cartella spostata o rimossa") : "Disattivata").font(.caption).foregroundStyle(.secondary)
+                                    Text(L10n.text(mod.enabled ? (FileManager.default.fileExists(atPath: mods.folder(mod).path) ? "File presenti nella cartella mod" : "Cartella spostata o rimossa") : "Disattivata")).font(.caption).foregroundStyle(.secondary)
                                     Spacer()
-                                    Button("Mostra file") { NSWorkspace.shared.open(mods.folder(mod)) }
-                                    Button(mod.enabled ? "Disattiva" : "Riattiva") {
+                                    Button(L10n.text("Mostra file")) { NSWorkspace.shared.open(mods.folder(mod)) }
+                                    Button(L10n.text(mod.enabled ? "Disattiva" : "Riattiva")) {
                                         do { try mods.toggle(mod); message = mod.enabled ? "Mod spostata fuori dalla cartella del gioco." : "Mod ripristinata nella cartella scelta." }
                                         catch { message = error.localizedDescription }
                                     }.disabled(library.isBusy(game))
                                 }.padding(.vertical, 5)
                             }
-                            Text("La presenza dei file non garantisce che il gioco abbia caricato la mod. Loader, dipendenze e ordine di caricamento restano specifici del gioco.").font(.caption).foregroundStyle(.secondary)
+                            Text(L10n.text("La presenza dei file non garantisce che il gioco abbia caricato la mod. Loader, dipendenze e ordine di caricamento restano specifici del gioco.")).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if let error = mods.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                    if let error = mods.error { Text(L10n.text(error)).font(.caption).foregroundStyle(.orange) }
                     HStack {
-                        TextField("Cerca mod nel Workshop", text: $workshopSearch).textFieldStyle(.roundedBorder).onSubmit { Task { await loadWorkshop(reset: true) } }
-                        Button("Cerca", systemImage: "magnifyingglass") { Task { await loadWorkshop(reset: true) } }.disabled(loadingWorkshop)
+                        TextField(L10n.text("Cerca mod nel Workshop"), text: $workshopSearch).textFieldStyle(.roundedBorder).onSubmit { Task { await loadWorkshop(reset: true) } }
+                        Button(L10n.text("Cerca"), systemImage: "magnifyingglass") { Task { await loadWorkshop(reset: true) } }.disabled(loadingWorkshop)
                     }
-                    if !workshopMessage.isEmpty { Text(workshopMessage).font(.caption).foregroundStyle(.secondary) }
+                    if !workshopMessage.isEmpty { Text(L10n.text(workshopMessage)).font(.caption).foregroundStyle(.secondary) }
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230))], spacing: 16) {
                             ForEach(workshopItems) { item in
                                 VStack(alignment: .leading, spacing: 10) {
                                     AsyncImage(url: item.previewURL) { image in image.resizable().scaledToFill() } placeholder: { Color.indigo.opacity(0.25).overlay(Image(systemName: "puzzlepiece.extension")) }.frame(height: 120).clipped().cornerRadius(10)
                                     Text(item.title).font(.headline).lineLimit(2)
-                                    Text(item.description ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                                    Text(L10n.text(item.description ?? "")).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                                     HStack {
-                                        Label("\(item.subscriptions)", systemImage: "person.2").font(.caption2).foregroundStyle(.secondary)
+                                        Label(L10n.text("\(item.subscriptions)"), systemImage: "person.2").font(.caption2).foregroundStyle(.secondary)
                                         Spacer()
-                                        Button("Scarica", systemImage: "arrow.down.circle") { input = item.id; download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
+                                        Button(L10n.text("Scarica"), systemImage: "arrow.down.circle") { input = item.id; download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
                                     }
                                 }.padding(14).background(Color.white.opacity(0.04)).cornerRadius(14)
                             }
                         }
-                        if workshopItems.count < workshopTotal { Button("Carica altre mod") { Task { await loadWorkshop(reset: false) } }.disabled(loadingWorkshop) }
-                        if loadingWorkshop { ProgressView("Caricamento mod…").padding() }
+                        if workshopItems.count < workshopTotal { Button(L10n.text("Carica altre mod")) { Task { await loadWorkshop(reset: false) } }.disabled(loadingWorkshop) }
+                        if loadingWorkshop { ProgressView(L10n.text("Caricamento mod…")).padding() }
                         if workshopItems.isEmpty && !loadingWorkshop { ContentUnavailableViewCompat(title: "Nessuna mod trovata", icon: "puzzlepiece.extension", detail: "Il gioco potrebbe non avere un Workshop oppure la ricerca non ha restituito risultati.") }
                     }
                     HStack {
-                        TextField("Oppure incolla un link o ID della mod", text: $input).textFieldStyle(.roundedBorder)
-                        Button("Scarica mod") { download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
-                        if downloading { Button("Annulla") { task?.cancel(); if ownsSteamOperation { steam.cancel() } } }
+                        TextField(L10n.text("Oppure incolla un link o ID della mod"), text: $input).textFieldStyle(.roundedBorder)
+                        Button(L10n.text("Scarica mod")) { download(id) }.disabled(downloading || steam.busy || library.running.contains(game.id))
+                        if downloading { Button(L10n.text("Annulla")) { task?.cancel(); if ownsSteamOperation { steam.cancel() } } }
                     }
-                    if let folder = downloaded { HStack { Button("Mostra download") { NSWorkspace.shared.open(folder) }; Button("Installa in cartella mod…") { installMod(folder) }.disabled(library.running.contains(game.id)) } }
-                    if !message.isEmpty { Text(message).font(.caption).textSelection(.enabled) }
+                    if let folder = downloaded { HStack { Button(L10n.text("Mostra download")) { NSWorkspace.shared.open(folder) }; Button(L10n.text("Installa in cartella mod…")) { installMod(folder) }.disabled(library.running.contains(game.id)) } }
+                    if !message.isEmpty { Text(L10n.text(message)).font(.caption).textSelection(.enabled) }
                 } else if tab == "Cloud" {
-                    Text("I salvataggi Auto-Cloud supportati vengono confrontati prima dell’avvio: la copia più recente ha priorità. I file locali sostituiti sono conservati in un backup. Alla chiusura i salvataggi Auto-Cloud modificati vengono inviati a Steam, con confronto delle copie e verifica dal server. I file Steam API senza percorso dichiarato non sono ancora supportati.").foregroundStyle(.secondary)
-                    Button(checkingCloud ? "Caricamento…" : "Aggiorna elenco") { checkCloud() }
+                    Text(L10n.text("I salvataggi Auto-Cloud supportati vengono confrontati prima dell’avvio: la copia più recente ha priorità. I file locali sostituiti sono conservati in un backup. Alla chiusura i salvataggi Auto-Cloud modificati vengono inviati a Steam, con confronto delle copie e verifica dal server. I file Steam API senza percorso dichiarato non sono ancora supportati.")).foregroundStyle(.secondary)
+                    Button(L10n.text(checkingCloud ? "Caricamento…" : "Aggiorna elenco")) { checkCloud() }
                         .disabled(checkingCloud || steam.busy || steam.preparing || library.signingIn || library.syncingSteam || library.running.contains(game.id))
-                    if let status = library.cloudStatuses[game.id] { Text(status).font(.callout).textSelection(.enabled) }
+                    if let status = library.cloudStatuses[game.id] { Text(L10n.text(status)).font(.callout).textSelection(.enabled) }
                     HStack {
-                        Button("Sincronizza ora") { Task { await library.syncCloud(game) } }.disabled(library.isBusy(game))
-                        Button("Risolvi un conflitto…") { resolvingCloud = true }.disabled(library.isBusy(game))
-                        Button("Apri backup") { NSWorkspace.shared.open(library.root.appendingPathComponent("Cloud/Backups")) }
+                        Button(L10n.text("Sincronizza ora")) { Task { await library.syncCloud(game) } }.disabled(library.isBusy(game))
+                        Button(L10n.text("Risolvi un conflitto…")) { resolvingCloud = true }.disabled(library.isBusy(game))
+                        Button(L10n.text("Apri backup")) { NSWorkspace.shared.open(library.root.appendingPathComponent("Cloud/Backups")) }
                     }
-                    if !cloudMessage.isEmpty { Text(cloudMessage).font(.caption).textSelection(.enabled) }
+                    if !cloudMessage.isEmpty { Text(L10n.text(cloudMessage)).font(.caption).textSelection(.enabled) }
                     if let inventory {
-                        Text("\(inventory.liveFiles.count) file nel cloud").font(.headline)
+                        Text(L10n.text("\(inventory.liveFiles.count) file nel cloud")).font(.headline)
                         ScrollView {
                             LazyVStack(spacing: 10) {
                                 ForEach(Array(inventory.liveFiles.enumerated()), id: \.offset) { entry in
                                     HStack(spacing: 14) {
                                         Image(systemName: "doc.fill").font(.title2).foregroundStyle(.mint).frame(width: 35)
                                         VStack(alignment: .leading, spacing: 5) {
-                                            Text(entry.element.name).font(.headline).textSelection(.enabled)
-                                            Text("\(ByteCountFormatter.string(fromByteCount: Int64(entry.element.size), countStyle: .file)) · \(Date(timeIntervalSince1970: TimeInterval(entry.element.timestamp)).formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                                            Text(L10n.text(entry.element.name)).font(.headline).textSelection(.enabled)
+                                            Text(L10n.text("\(ByteCountFormatter.string(fromByteCount: Int64(entry.element.size), countStyle: .file)) · \(Date(timeIntervalSince1970: TimeInterval(entry.element.timestamp)).formatted(date: .abbreviated, time: .shortened))")).font(.caption).foregroundStyle(.secondary)
                                         }
                                         Spacer()
                                         if let path = localSaves[entry.element.name] {
-                                            Label(FileManager.default.fileExists(atPath: path.path) ? "Anche su questo Mac" : "Nel cloud", systemImage: "icloud").font(.caption).foregroundStyle(.secondary)
-                                            Button("Mostra locale") { NSWorkspace.shared.activateFileViewerSelecting([path]) }.disabled(!FileManager.default.fileExists(atPath: path.path))
-                                        } else { Text("Steam API").font(.caption).foregroundStyle(.secondary) }
+                                            Label(L10n.text(FileManager.default.fileExists(atPath: path.path) ? "Anche su questo Mac" : "Nel cloud"), systemImage: "icloud").font(.caption).foregroundStyle(.secondary)
+                                            Button(L10n.text("Mostra locale")) { NSWorkspace.shared.activateFileViewerSelecting([path]) }.disabled(!FileManager.default.fileExists(atPath: path.path))
+                                        } else { Text(L10n.text("Steam API")).font(.caption).foregroundStyle(.secondary) }
                                     }.padding(14).background(Color.white.opacity(0.04)).cornerRadius(12)
                                 }
                             }
@@ -154,16 +155,16 @@ struct GameCommunityView: View {
                 } else {
                     if let player {
                         HStack {
-                            if let minutes = player.minutes { Label(String(format: "%.1f ore su Steam", Double(minutes) / 60), systemImage: "clock") }
-                            if let unlocked = player.unlocked, let total = player.total { Label("\(unlocked) / \(total) trofei su Steam", systemImage: "trophy") }
+                            if let minutes = player.minutes { Label(L10n.text(String(format: "%.1f ore su Steam", Double(minutes) / 60)), systemImage: "clock") }
+                            if let unlocked = player.unlocked, let total = player.total { Label(L10n.text("\(unlocked) / \(total) trofei su Steam"), systemImage: "trophy") }
                         }.font(.headline)
                     }
-                    if !playerMessage.isEmpty { Text(playerMessage).font(.caption).foregroundStyle(.secondary) }
-                    Text("Dati dell’account letti da Steam. Le ore locali sono conteggiate separatamente. I nuovi sblocchi dei giochi Windows compatibili vengono rilevati durante la partita e confermati da Steam.").font(.caption).foregroundStyle(.secondary)
+                    if !playerMessage.isEmpty { Text(L10n.text(playerMessage)).font(.caption).foregroundStyle(.secondary) }
+                    Text(L10n.text("Dati dell’account letti da Steam. Le ore locali sono conteggiate separatamente. I nuovi sblocchi dei giochi Windows compatibili vengono rilevati durante la partita e confermati da Steam.")).font(.caption).foregroundStyle(.secondary)
                     if let snapshot = achievementData {
                         HStack {
                             ProgressView(value: Double(snapshot.achievements.filter(\.unlocked).count), total: Double(max(1, snapshot.achievements.count)))
-                            Picker("Mostra", selection: $achievementFilter) { Text("Tutti").tag("Tutti"); Text("Ottenuti").tag("Ottenuti"); Text("Da ottenere").tag("Da ottenere") }.pickerStyle(.segmented).frame(width: 300)
+                            Picker(L10n.text("Mostra"), selection: $achievementFilter) { Text(L10n.text("Tutti")).tag("Tutti"); Text(L10n.text("Ottenuti")).tag("Ottenuti"); Text(L10n.text("Da ottenere")).tag("Da ottenere") }.pickerStyle(.segmented).frame(width: 300)
                         }
                         ScrollView {
                             LazyVStack(spacing: 10) {
@@ -178,11 +179,11 @@ struct GameCommunityView: View {
                 }
             }
         }.padding(24).frame(minWidth: 850, minHeight: 640)
-        .confirmationDialog("Quale copia vuoi conservare?", isPresented: $resolvingCloud, titleVisibility: .visible) {
-            Button("Usa i salvataggi di questo Mac su Steam") { library.resolveCloudConflict(game, keepLocal: true) }
-            Button("Usa i salvataggi Steam su questo Mac") { library.resolveCloudConflict(game, keepLocal: false) }
-            Button("Annulla", role: .cancel) {}
-        } message: { Text("Prima di sostituire i file, MacGameDeck conserva le copie precedenti nei backup. La scelta riguarda i salvataggi Auto-Cloud supportati di questo gioco.") }
+        .confirmationDialog(L10n.text("Quale copia vuoi conservare?"), isPresented: $resolvingCloud, titleVisibility: .visible) {
+            Button(L10n.text("Usa i salvataggi di questo Mac su Steam")) { library.resolveCloudConflict(game, keepLocal: true) }
+            Button(L10n.text("Usa i salvataggi Steam su questo Mac")) { library.resolveCloudConflict(game, keepLocal: false) }
+            Button(L10n.text("Annulla"), role: .cancel) {}
+        } message: { Text(L10n.text("Prima di sostituire i file, MacGameDeck conserva le copie precedenti nei backup. La scelta riguarda i salvataggi Auto-Cloud supportati di questo gioco.")) }
         .task(id: tab + (library.data.steamAccount?.steamID ?? "")) {
             guard library.data.steamAccount != nil else { return }
             do {
@@ -274,8 +275,8 @@ struct GameCommunityView: View {
     }
     private func installMod(_ source: URL) {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
-        panel.title = "Scegli la cartella mod indicata dall'autore"
-        panel.message = "Verrà creata una nuova sottocartella con i file scaricati. I file esistenti non saranno sovrascritti. Il gioco potrebbe richiedere altri passaggi per attivare la mod."
+        panel.title = L10n.text("Scegli la cartella mod indicata dall'autore")
+        panel.message = L10n.text("Verrà creata una nuova sottocartella con i file scaricati. I file esistenti non saranno sovrascritti. Il gioco potrebbe richiedere altri passaggi per attivare la mod.")
         guard panel.runModal() == .OK, let target = panel.url else { return }
         do {
             let src = source.resolvingSymlinksInPath().standardizedFileURL.path
@@ -300,12 +301,14 @@ struct GameCommunityView: View {
 }
 
 struct ContentUnavailableViewCompat: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     let title: String
     let icon: String
     let detail: String
-    var body: some View { VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 40)).foregroundStyle(.secondary); Text(title).font(.title3.bold()); Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center) }.padding(30).frame(maxWidth: .infinity) }
+    var body: some View { VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 40)).foregroundStyle(.secondary); Text(L10n.text(title)).font(.title3.bold()); Text(L10n.text(detail)).foregroundStyle(.secondary).multilineTextAlignment(.center) }.padding(30).frame(maxWidth: .infinity) }
 }
 struct SteamAchievementRow: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     let achievement: SteamAchievement
     var body: some View {
         HStack(spacing: 16) {
@@ -314,7 +317,7 @@ struct SteamAchievementRow: View {
                 Text(achievement.displayTitle).font(.headline)
                 Text(achievement.displayDescription).font(.callout).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if achievement.unlocked { VStack(alignment: .trailing) { Label("Ottenuto", systemImage: "checkmark.circle.fill").foregroundStyle(.mint); Text(Date(timeIntervalSince1970: Double(achievement.unlockTime)).formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary) }.font(.caption) }
+            if achievement.unlocked { VStack(alignment: .trailing) { Label(L10n.text("Ottenuto"), systemImage: "checkmark.circle.fill").foregroundStyle(.mint); Text(L10n.text(Date(timeIntervalSince1970: Double(achievement.unlockTime)).formatted(date: .abbreviated, time: .omitted))).foregroundStyle(.secondary) }.font(.caption) }
         }.padding(14).background(Color.white.opacity(achievement.unlocked ? 0.065 : 0.03)).cornerRadius(12).opacity(achievement.unlocked ? 1 : 0.8)
     }
 }

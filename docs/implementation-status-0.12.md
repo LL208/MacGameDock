@@ -1,13 +1,13 @@
-# MacGameDeck 0.12.0 · artwork e layout
+# Artwork and layout — 0.12.0
 
-Big Picture ha griglia adattiva con copertine verticali, sfondo e logo del gioco selezionato, barra delle sezioni e controlli compatti. Il pulsante Modalità PC in alto, il pulsante Big Picture sul desktop e ⌘⇧B alternano le interfacce. Anche View/Share sui controller estesi permette il cambio mentre l’app è in primo piano. La preferenza è persistente.
+Big Picture adds an adaptive portrait-cover grid, selected-game background/logo, section bar and compact controls. PC Mode, the desktop Big Picture button and ⌘⇧B switch interfaces. Extended-controller View/Share also switches while the app is foreground. The preference persists.
 
-SteamGridDB supporta copertine, immagini orizzontali, sfondi e loghi. Serve una chiave API personale configurabile nelle impostazioni desktop o con tastiera mascherata in Big Picture. La chiave è salvata privatamente (0600, cartella 0700), mai nei sorgenti o nei log e mai nelle richieste al CDN. Le richieste sono limitate a quattro contemporanee, con timeout e limiti di dimensioni e pixel.
+SteamGridDB provides covers, landscapes, backgrounds and logos using a personal API key, entered in desktop Settings or through a masked Big Picture keyboard. The key is stored privately (0600 file, 0700 directory), excluded from source/logs and never sent to image CDNs. Requests are limited to four concurrent operations with timeouts, byte limits and pixel limits.
 
-Ricerca tramite App ID per Steam; solo corrispondenza univoca del titolo normalizzato per gli altri store. Scelta automatica degli asset statici, esclusione dei risultati marcati NSFW/humor, attribuzione all’autore. Cache locale gestita fino a 256 MiB, immagini decodificate fino a 96 MiB/64 voci. Un refresh offline conserva l’artwork già presente. Quando mancano risultati si usano immagini Steam o un segnaposto.
+Steam games match by App ID; other stores require a unique normalized-title match. Static assets are selected automatically, excluding NSFW/humor entries and preserving attribution. Managed disk cache: 256 MiB. Decoded image cache: 96 MiB/64 entries. Offline/failed refresh preserves existing artwork. Steam images or placeholders provide fallback.
 
-## Verifica
+## Verification
 
-Suite di logica: 122 test, 117 superati e 5 saltati. Eseguita in Xcode e ripetuta da terminale con una cartella temporanea senza alias; comprende richieste API simulate, controllo dell’header Authorization, download senza chiave al CDN, cache offline, refresh fallito che conserva la copertina, filtri degli asset e permessi delle credenziali.
+122 logic tests: 117 passed, 5 skipped. Run in Xcode and again from the terminal with a non-aliased temporary directory. Tests cover simulated API requests, authorization headers, CDN downloads without credentials, offline caching, failed-refresh preservation, asset filters and credential permissions.
 
-La build nativa Xcode compila. La connessione reale a SteamGridDB richiede la chiave personale dell’utente e non è stata verificata su un account reale. Le immagini Steam sono state scaricate nella libreria isolata di prova. Il controllo visivo completo e lo switch tramite interazione reale non sono certificati: il lettore delle finestre ha incontrato timeout ed errori del servizio di accessibilità. Le copie di prova sono separate dai dati reali.
+Native Xcode compilation succeeded. Real SteamGridDB access requires the user's key and was not verified against a live account. Steam images downloaded in an isolated test library. Full visual review and real interface switching were not certified because accessibility inspection timed out or failed. Test copies remain separate from real user data.

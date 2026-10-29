@@ -62,7 +62,7 @@ final class SteamSocial: ObservableObject {
     private func send(_ values: [String: Any]) async throws -> Reply {
         guard let directory, let owner, connected else { throw DockError.message("La connessione Steam in background non è pronta.") }
         let id = UUID().uuidString
-        var command = values; command["steamID"] = owner
+        var command = values; command["steamID"] = owner; command["language"] = AppLanguage.shared.steamLanguage
         let file = directory.appendingPathComponent("command-\(id).json"), result = directory.appendingPathComponent("result-\(id).json")
         try JSONSerialization.data(withJSONObject: command).write(to: file, options: .atomic)
         defer { try? FileManager.default.removeItem(at: result); try? FileManager.default.removeItem(at: file) }

@@ -225,6 +225,8 @@ final class ManagedSteam: ObservableObject {
     private var cancelled = false
     private var sessionPersistenceFailure: String?
     private var cloudFailure: String?
+    private var cloudErrorCode: String?
+    private var cloudErrorType: String?
     private var sessionDirectory: URL?
     private var expectedAccount: String?
     @Published var progress: Double = 0
@@ -312,6 +314,12 @@ final class ManagedSteam: ObservableObject {
             progress = 1; bytesPerSecond = 0
             message = "Download verificato. Preparazione del container…"
         case "cloud_error":
+            cloudErrorCode = value["code"] as? String
+            cloudErrorType = value["errorType"] as? String
+            if let frames = value["frames"] as? [String] {
+                let safe = frames.prefix(8).filter { $0.count < 180 && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._+<>".contains($0)) } }
+                diagnostics.write("Cloud", "Diagnosi motore: " + safe.joined(separator: " → "))
+            }
             cloudFailure = SteamCloudDiagnostic.message(code: value["code"] as? String ?? "engine_error", errorType: value["errorType"] as? String)
         default: break
         }
@@ -354,7 +362,7 @@ final class ManagedSteam: ObservableObject {
         guard !busy else { throw DockError.message("Attendi il completamento dell'operazione Steam in corso.") }
         try Task.checkCancellation()
         activeOperationID = operationID
-        busy = true; cancelled = false; sessionPersistenceFailure = nil; cloudFailure = nil; rejectedAccount = false; account = nil; qr = nil
+        busy = true; cancelled = false; sessionPersistenceFailure = nil; cloudFailure = nil; cloudErrorCode = nil; cloudErrorType = nil; rejectedAccount = false; account = nil; qr = nil
         expectedAccount = expected; progress = 0; lastProgress = nil; bytesPerSecond = 0; downloadedBytes = 0; totalBytes = 0
         defer { activeOperationID = nil; busy = false; process = nil; qr = nil; sessionDirectory = nil }
         let executable = try helper()
@@ -368,6 +376,7 @@ final class ManagedSteam: ObservableObject {
         let p = Process(); p.executableURL = executable; p.currentDirectoryURL = directory
         p.arguments = args + ["-remember-password", "-loginid", String(loginID)] + (session.map { ["-username", $0.username] } ?? ["-qr"])
         var env = ProcessInfo.processInfo.environment; env["MACGAMEDECK_PROTOCOL"] = "1"; env["MACGAMEDECK_EXPECTED_STEAMID"] = expected
+        env["MACGAMEDECK_LANGUAGE"] = AppLanguage.shared.steamLanguage
         env["MACGAMEDECK_MACHINE_ID"] = try machineIdentity()
         env["DOTNET_ROOT"] = executable.deletingLastPathComponent().path
         env["DOTNET_ROLL_FORWARD"] = "LatestPatch"
@@ -430,7 +439,17 @@ final class ManagedSteam: ObservableObject {
         defer { try? FileManager.default.removeItem(at: file) }
         activeGame = game.id
         defer { activeGame = nil }
-        _ = try await run(["-app", String(id), "-deck-cloud-inventory", file.path], expected: expected)
+        for attempt in 0..<2 {
+            do {
+                _ = try await run(["-app", String(id), "-deck-cloud-inventory", file.path], expected: expected)
+                break
+            } catch {
+                let transient = ["steam_NoConnection", "steam_Timeout", "steam_ServiceUnavailable"].contains(cloudErrorCode ?? "") || (cloudErrorCode == "engine_error" && cloudErrorType == "NullReferenceException")
+                guard attempt == 0, transient, !Task.isCancelled else { throw error }
+                diagnostics.write("Cloud", "Lettura interrotta; nuovo accesso automatico prima di confrontare i salvataggi.", game: game)
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
         let bytes = try Data(contentsOf: file)
         guard bytes.count <= 8_000_000 else { throw DockError.message("Inventario cloud troppo grande.") }
         let inventory = try JSONDecoder().decode(SteamCloudInventory.self, from: bytes)

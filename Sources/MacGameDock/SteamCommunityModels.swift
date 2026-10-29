@@ -12,7 +12,7 @@ struct SteamAchievement: Codable, Identifiable, Equatable {
     var unlockTime: UInt32
     let statID: UInt32
     let bit: Int
-    var displayTitle: String { hidden && !unlocked ? "Trofeo nascosto" : (title.isEmpty ? name : title) }
+    var displayTitle: String { hidden && !unlocked ? L10n.text("Trofeo nascosto") : (title.isEmpty ? name : title) }
     var displayDescription: String { hidden && !unlocked ? "Continua a giocare per scoprirlo." : description }
     var imageURL: URL? { SteamImageURL.make(unlocked ? icon : iconGray) }
 }

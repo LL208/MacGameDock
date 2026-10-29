@@ -41,7 +41,7 @@ final class GameDetailModel: ObservableObject {
     private var cancelHelper: (() -> Void)?
     private let metadata: (Int) async throws -> GameInsights
     private let playerCount: (Int) async throws -> CurrentPlayers
-    init(metadata: @escaping (Int) async throws -> GameInsights = { try await GameInsights.fetch(appID: $0, language: "italian") }, playerCount: @escaping (Int) async throws -> CurrentPlayers = { try await CurrentPlayers.fetch($0) }) {
+    init(metadata: @escaping (Int) async throws -> GameInsights = { try await GameInsights.fetch(appID: $0, language: AppLanguage.shared.steamLanguage) }, playerCount: @escaping (Int) async throws -> CurrentPlayers = { try await CurrentPlayers.fetch($0) }) {
         self.metadata = metadata; self.playerCount = playerCount
     }
     func cancel() {
@@ -88,7 +88,7 @@ final class GameDetailModel: ObservableObject {
             playersStatus = "Non disponibile"; trophyStatus = "Trofei Steam non disponibili per questo gioco."; return
         }
         let cacheOwner = owner.map { SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() } ?? "guest"
-        let cache = root.appendingPathComponent("GameDetails/\(appID).json")
+        let cache = root.appendingPathComponent("GameDetails/\(AppLanguage.shared.code)/\(appID).json")
         if let bytes = try? Data(contentsOf: cache), bytes.count < 1_000_000 { insights = try? JSONDecoder().decode(GameInsights.self, from: bytes) }
         metadataLoading = true
         tasks.append(Task {

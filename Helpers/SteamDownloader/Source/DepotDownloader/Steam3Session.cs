@@ -386,16 +386,21 @@ namespace DepotDownloader
         // Read-only cloud preflight for MacGameDeck. No URLs, authorization headers or save contents are exported.
         public async Task ExportDeckCloudInventory(uint appId, string destination)
         {
+            // Steam clears SteamID on disconnect, including while the cloud request awaits.
+            var owner = steamUser?.SteamID?.ConvertToUInt64().ToString();
+            if (owner == null || !IsLoggedOn) throw new DeckCloudException("steam_NoConnection");
             await RequestAppInfo(appId);
+            if (!IsLoggedOn) throw new DeckCloudException("steam_NoConnection");
             if (ContentDownloader.GetSteam3AppSection(appId, EAppInfoSection.UFS) == null)
             {
-                var empty = new { schemaVersion = 1, steamID = steamUser.SteamID.ConvertToUInt64().ToString(), appID = appId,
+                var empty = new { schemaVersion = 1, steamID = owner, appID = appId,
                     changeNumber = "0", isDelta = false, prefixes = Array.Empty<string>(), files = Array.Empty<object>(), ufs = (object)null };
                 System.IO.File.WriteAllText(destination, System.Text.Json.JsonSerializer.Serialize(empty));
                 return;
             }
             var cloud = steamClient.GetHandler<SteamUnifiedMessages>().CreateService<Cloud>();
             var result = await cloud.GetAppFileChangelist(new CCloud_GetAppFileChangelist_Request { appid = appId, synced_change_number = 0 });
+            if (!IsLoggedOn || result?.Body == null) throw new DeckCloudException("steam_NoConnection");
             if (result.Result != EResult.OK)
                 throw new DeckCloudException("steam_" + result.Result.ToString());
             if (result.Body.is_only_delta)
@@ -407,7 +412,7 @@ namespace DepotDownloader
                 prefixIndex = file.path_prefix_index
             }).ToArray();
             var value = new {
-                schemaVersion = 1, steamID = steamUser.SteamID.ConvertToUInt64().ToString(), appID = appId,
+                schemaVersion = 1, steamID = owner, appID = appId,
                 changeNumber = result.Body.current_change_number.ToString(), isDelta = false,
                 prefixes = result.Body.path_prefixes.ToArray(), files,
                 ufs = ContentDownloader.GetSteam3AppSection(appId, EAppInfoSection.UFS) is KeyValue ufs ? Node(ufs) : null

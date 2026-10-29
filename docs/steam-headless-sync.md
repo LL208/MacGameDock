@@ -1,80 +1,87 @@
-# Steam senza client grafico: scelta e stato dell'implementazione
+# Steam integration without the graphical client
 
-La scelta per MacGameDeck è un servizio di connessione Steam interno basato su SteamKit2, condiviso tra download, cloud e attività, con avvio diretto dei giochi. Non ripristinare l'avvio tramite steam.exe/Steam.app della 0.6.0: non soddisfa il requisito e aveva regressioni di installazione. Il primo titolo di prova concordato è Cruelty Squad (1388770), che dichiara Steam Cloud e Steam Achievements sulla pagina ufficiale.
+MacGameDeck uses an internal SteamKit2 service for authenticated downloads, cloud operations and activity while launching games directly. Reintroducing the Steam.app/steam.exe launch path from 0.6.0 would restore the installation regressions that prompted its removal.
 
-## Le tre funzioni hanno requisiti diversi
+The original test title is Cruelty Squad (App ID 1388770), which advertises Steam Cloud and achievements. This document separates architectural requirements from historical implementation milestones. See the [main README](../README.md) for current scope.
 
-| Funzione | Durante la partita | Alla chiusura | Limite da gestire |
-|---|---|---|---|
-| Salvataggi Steam Auto-Cloud | Il gioco scrive i suoi file locali | Confronto e upload dei file modificati; download prima del prossimo avvio | Metadati UFS, root overrides Windows/macOS, conflitti e formati cross-platform |
-| Ore su Steam | Connessione autenticata e notifica GamesPlayed riferita al processo reale monitorato | Notifica di fine partita e verifica del conteggio restituito da Steam | Non assumere che ore accumulate offline possano essere sommate retroattivamente; rispettare sessioni attive su altri dispositivi |
-| Trofei | Un ponte Steamworks registra solo SetAchievement/StoreStats effettivamente chiamati dal gioco | Invio degli eventi validati, con journal offline e retry | ABI e versioni delle interfacce Steamworks del singolo gioco; la sola durata o il salvataggio non dimostrano genericamente uno sblocco |
+## Three different responsibilities
 
-L'API Steamworks ufficiale richiede un client che implementi le interfacce. SteamKit2 fornisce il trasporto verso i servizi Steam, ma non implementa da solo l'ABI Steamworks che il gioco Windows si aspetta. GameNative dimostra una soluzione senza GUI usando un componente compatibile (GSE/Goldberg), che produce eventi locali, e un servizio autenticato che li sincronizza. Le librerie Android di GameNative non sono un componente sostituibile direttamente nel nostro launcher macOS. Occorre portare/integrarne uno compatibile con Wine, per profili testati, preservando gli originali e il percorso di avvio diretto. Non stimare trofei, non sbloccarli in massa, non dichiarare online una sincronizzazione solo perché il gioco è terminato.
+| Feature | During play | After exit | Important constraint |
+| --- | --- | --- | --- |
+| Auto-Cloud saves | The game writes local files | Compare/upload changes; restore before next launch | UFS metadata, platform root overrides, conflicts and save-format compatibility |
+| Steam playtime | Authenticated GamesPlayed for the real monitored process | Signal exit and read server totals | Do not add offline time retroactively or displace another device's active session |
+| Achievements | A compatible Steamworks bridge records real SetAchievement/StoreStats events | Submit validated events with an offline journal | ABI/interface versions vary; elapsed time or arbitrary save contents do not prove an unlock |
 
-## Flusso da completare
+SteamKit2 supplies transport to Steam services, not the Steamworks ABI expected by a Windows game. A Wine-compatible bridge is required for supported titles. GameNative demonstrates the combination of a compatible component such as GSE/Goldberg and an authenticated synchronization service; its Android libraries are not drop-in macOS components.
 
-1. Connessione persistente con la sessione salvata e un proprietario unico per le operazioni Steam; evitare helper concorrenti con lo stesso LoginID e gestire PlayedElsewhere/PlayingBlocked senza sostituire la sessione dell'altro dispositivo.
-2. Preflight cloud completo, vincolato a SteamID/AppID. Mappatura dei percorsi dai metadati UFS verso le cartelle effettive del container, senza uscire dai percorsi autorizzati.
-3. Confronto a tre vie (locale, cloud, baseline precedente), hash dei contenuti, backup versionato prima di ogni restore. Due copie differenti al primo collegamento sono un conflitto. Una rimozione non viene propagata automaticamente. Non usare solo l'orario dei file.
-4. Download in staging, verifica hash/decompressione/cifratura quando richiesti, poi sostituzione atomica e baseline. Se il preflight fallisce, non sovrascrivere i salvataggi e offrire l'avvio offline.
-5. Gioco avviato direttamente; attività Steam inviata solo mentre il processo verificato è attivo. Il processo del servizio non è tempo di gioco. Serve riconoscere anche i processi figli che sopravvivono al launcher Wine.
-6. Alla chiusura: snapshot e backup, nuovo controllo della revisione remota, upload batch con verifica e gestione di quota/errori/concorrenza. Non cancellare remote saves automaticamente.
-7. Ponte Steamworks per i titoli supportati: journal vincolato a account, AppID e sessione; schema/versioni delle statistiche dal server; invio dei soli eventi earned ricevuti dal gioco e conferma server prima di marcarli sincronizzati.
+Preserve original game libraries and direct launching. Never infer achievements, unlock them in bulk or declare synchronization successful merely because a process exited.
 
-## Preflight iniziale (0.6.4)
+## Required flow
 
-- CLI `-app <appid> -deck-cloud-inventory <file>` nel motore: richiede un inventario completo a Cloud.GetAppFileChangelist e legge i metadati UFS. Esporta hash, nomi, namespace, revisione e configurazione; non scarica contenuti dei salvataggi, non esporta URL/header di accesso e non esegue upload/delete.
-- Swift: lettura dell'inventario vincolata ad account e gioco, rifiuto di delta parziali/percorsi non sicuri/duplicati; confronto a tre vie per upload/download/conflict, con protezione delle rimozioni. Il planner non applica decisioni ai file.
-- Menu del gioco → Workshop, cloud e trofei → Steam Cloud → Verifica Steam Cloud: preflight in sola lettura con sessione già salvata, senza avvio del client Steam.
-- 53 test automatici superati; helper .NET compilato. La prova reale in Codex è terminata con un crash del helper (SIGSEGV, exit -11). Non è stata individuata la causa e non è stato ricevuto un inventario completo. Nessun save è stato modificato. Serve ripetere il preflight nell'app macOS per distinguere un problema del helper da una limitazione dell'ambiente di esecuzione.
+1. Reuse the saved session, coordinate operation ownership and use distinct LoginIDs where concurrent helpers are needed. Respect PlayedElsewhere/PlayingBlocked without taking over another device.
+2. Bind cloud preflight to SteamID/AppID and map declared UFS paths into authorized container locations.
+3. Compare content hashes, timestamps and baseline state. Preserve versioned backups before restoration. Conflicting content needs explicit handling; deletions must not propagate automatically.
+4. Download into staging, verify size/hash and supported compression before atomic replacement. Unsupported encryption/path mapping must remain explicit. If preflight fails, preserve saves and offer local-only launch.
+5. Start the game directly. Report activity only for a verified live game process, including relevant children; helper lifetime is not gameplay.
+6. After exit, snapshot changes, reread remote revision, upload with quota/error/concurrency checks and verify server state. Preserve pending work on failure.
+7. Bind bridge journals to account, app and session. Use current server schemas/stat versions and submit only known earned events actually received from the game. Mark synchronized only after server confirmation.
 
-**Non ancora implementati/attivati:** trasferimento e restore dei salvataggi, backup versionato integrato, connessione persistente e ore reali su Steam, ponte Steamworks e upload dei trofei. Questa build è un preflight, non la sincronizzazione completa richiesta. Le ore continuano a essere quelle locali già presenti nella 0.6.3. Le DLL del gioco e i suoi salvataggi non sono stati modificati.
+The restore policy introduced in 0.7.0 prioritizes the newer copy after comparing content, as requested by the user. Equal dates with different content require resolution. Post-session upload additionally checks the remote state observed before launch so concurrent device changes are not resolved solely by timestamp.
 
-## Criteri di accettazione su Cruelty Squad
+## Historical milestones
 
-- Il preflight restituisce account/AppID corretti e configurazione UFS interpretabile senza client grafico.
-- Due progressi diversi su due dispositivi generano un conflitto e nessuna sovrascrittura prima di una scelta.
-- Un trasferimento interrotto conserva entrambe le copie e il backup è ripristinabile.
-- Un avanzamento effettuato nel gioco su Mac compare sul secondo dispositivo dopo un upload confermato; il percorso inverso è verificato separatamente.
-- Una partita online reale cambia il tempo di gioco riportato da Steam; nessun incremento per la durata del helper, per un avvio fallito o per un periodo offline non riconciliato.
-- Un obiettivo realmente ottenuto compare su Steam senza cambiare altri trofei e senza aprire/installare il client grafico.
-- L'avvio diretto che funziona attualmente resta funzionante quando il servizio è offline o disattivato.
+### 0.6.4 — Read-only preflight
 
-## Fonti primarie
+`-app <appid> -deck-cloud-inventory <file>` requests a complete Cloud.GetAppFileChangelist and UFS configuration. Exports include hashes, names, namespaces and revisions, not access URLs/headers. No download, upload or deletion occurred.
 
-- Steam Cloud e Auto-Cloud: https://partner.steamgames.com/doc/features/cloud
-- Requisiti Steamworks e SteamAPI_Init: https://partner.steamgames.com/doc/api/steam_api
-- StoreStats e obiettivi: https://partner.steamgames.com/doc/api/ISteamUserStats
-- GameNative, servizio e sincronizzazione dei trofei: https://github.com/utkarshdalal/GameNative/blob/master/app/src/main/java/app/gamenative/service/SteamService.kt
-- GameNative, confronto e trasferimenti AutoCloud: https://github.com/utkarshdalal/GameNative/blob/master/app/src/main/java/app/gamenative/service/SteamAutoCloud.kt
-- API cloud generate SteamKit2: https://github.com/SteamRE/SteamKit/blob/master/SteamKit2/SteamKit2/Base/Generated/SteamMsgCloud.cs
-- Cruelty Squad, supporto Cloud e Achievements: https://store.steampowered.com/app/1388770/Cruelty_Squad/
+Swift validated account/app ownership and rejected partial deltas, unsafe paths and duplicates. A three-way planner did not mutate files. The initial real helper probe crashed with SIGSEGV/exit -11 before receiving a complete inventory; no saves changed. 53 automated tests passed. At this point, transfers, persistent activity and achievement submission were not implemented.
 
-## Stato 0.7.0
+### 0.7.0 — Inventory and supported restore
 
-Implementati caricamento automatico dell'elenco, download autenticato in staging, controllo dimensione/SHA-1, ripristino di percorsi Auto-Cloud dichiarati supportati e backup con ricevuta. Per richiesta dell'utente, nel restore pre-avvio la data più recente ha priorità dopo confronto dei contenuti; date uguali con contenuti diversi sono un conflitto. Il planner a tre vie resta disponibile per la futura gestione dell'upload. La pagina Trofei e il catalogo leggono minuti e conteggi reali dall'account tramite servizi Player, separati dalle ore locali.
+Inventory loading became automatic. Authenticated staging downloads, SHA-1/size checks, supported Auto-Cloud mapping and backup receipts were added. Local/remote timestamp comparison followed content comparison. Player services read real Steam minutes/achievement counts separately from local time.
 
-Restano da implementare upload/baseline a fine partita, connessione persistente GamesPlayed e ponte Steamworks per nuovi trofei. SDK-cloud senza root Auto-Cloud riconoscibile, cifratura e path transforms complessi non sono supportati dal restore. Il crash in CoreFoundation è stato isolato nel provider hardware macOS SteamKit e corretto usando un’identità stabile dell’installazione. Validati su Steam reale la lettura delle statistiche Blue Revolver e il download in staging con verifica hash dei cinque saves Cruelty Squad e del save principale Blue Revolver. I test del restore usano file simulati; nessun save reale è stato sostituito. I file Steam API fuori dai pattern dichiarati sono esclusi dal restore, inclusi i replay Blue Revolver. Non presentare questa versione come sync bidirezionale completa o come sblocchi/ore inviati a Steam.
+SDK-only cloud without recognized roots, encryption and complex path transforms remained unsupported. The CoreFoundation crash was traced to SteamKit's macOS hardware provider and addressed with a stable installation identity. Real BLUE REVOLVER statistics and staged downloads of five Cruelty Squad saves plus BLUE REVOLVER's main save were verified. Container replacement remained simulated; real saves were not overwritten. Files outside declared patterns, including BLUE REVOLVER replays, were excluded.
 
-## Stato 0.8.0
+### 0.8.0 — Bridge, presence and activity
 
-Il client di compatibilità Steam API Windows GSE è incluso e integrato con preparazione automatica e backup/recovery. Il watcher raccoglie i nuovi earned dalla partita, conserva il journal e invia i bit allo schema corrente tramite ClientStoreUserStats2; la conferma richiede la rilettura del server. Il servizio resta connesso per Persona e GamesPlayed, controlla PlayingBlocked/PID/parent e non forza altre sessioni. GUI trofei/cloud/Workshop nativa, senza pagine incorporate. I binari non sono installati nei prefix reali dai tool durante lo sviluppo: l'app lo farà all'avvio dei giochi supportati.
+Pinned GSE x86/x64 Windows binaries were integrated with reversible preparation, backups and recovery. A watcher journals new earned events; ClientStoreUserStats2 preserves existing bits and requires server reread. Persona/GamesPlayed uses a persistent service with PID/parent and PlayingBlocked checks. Native achievement/cloud/Workshop views replaced embedded pages.
 
-Il trasporto di lettura e StoreStats è verificato su Steam reale con un obiettivo già ottenuto, senza cambiamenti di progressi o date. Restano da verificare in partita la cattura DLL Windows e il popup: il test Wine isolato nell'ambiente Codex fallisce al bootstrap wineserver/mach_port, prima della DLL. Il ponte resta sperimentale per i singoli giochi; macOS nativo non usa questa DLL. Upload cloud e nuovi trasferimenti SDK-cloud non sono implementati da questa versione.
+Real StoreStats transport was checked with an already-earned achievement, preserving progress and dates. The isolated Windows DLL test could not reach execution because wineserver/mach_port bootstrap failed in the restricted environment. New in-game capture and fullscreen notifications therefore remained unverified. Native macOS does not use these DLLs.
 
-## Stato 0.8.1
+### 0.8.1–0.8.2 — Dependencies and diagnostics
 
-Corretto il percorso di avvio dei giochi Steam esterni: un'installazione rilevata non apre più la selezione di download. Un bundle Mac unico e valido viene avviato direttamente; per installazioni ambigue rimane il collegamento allo store. Componenti Windows ricontrollati anche prima dell'avvio, con ricevute per prefix e recupero HTTPS Microsoft di Visual C++ 2015–2022 in base alle architetture PE. I vecchi script 2015+ non causano downgrade. Il pacchetto x64 ufficiale è stato scaricato correttamente; 72 test Swift superati. L'avvio effettivo di Denshattack sul Mac dell'utente resta da provare. Le limitazioni di cloud e ponte trofei della 0.8.0 restano valide.
+External Steam installations gained direct native-bundle launching where unambiguous. Windows components were rechecked before launch, with official HTTPS Microsoft Visual C++ packages selected by PE architecture and verified prefix receipts.
 
-## Stato 0.8.2
+Denshattack's installer log showed 0x80070666: a newer runtime was already installed. Exit code 102 is accepted only for Visual C++ when compatible registry entries and PE DLL versions are verified. x86 does not incorrectly require x64's vcruntime140_1.dll.
 
-Aggiunta pagina Log con eventi applicazione/Steam/trofei, code dei log Wine e dettagli degli ultimi installer Visual C++ per container, aggiornamento live, filtro/copia/export e prova popup locale senza sblocchi. Il log dell'installer Denshattack conferma 0x80070666 (versione più recente già installata). Il controllo in sola lettura del container reale riconosce runtime 14.51 x64/x86; corretto il falso requisito `vcruntime140_1.dll` su x86. I codici 102 vengono accettati solo per Visual C++ con registrazione e DLL PE/versione compatibili verificate. Test watcher: un solo popup richiesto per nuovo evento noto, esclusione degli sblocchi già presenti/sconosciuti, journal offline, prova notifica senza invio Steam. La verifica ABI isolata Wine resta inconcludente: wineserver/mach_port non si avvia; la visibilità del popup nella partita reale non è certificata. Nessun nuovo trofeo dell'account reale è stato simulato o forzato.
+Logs distinguish monitor readiness, received events, popup creation/visibility and server confirmation. Local notification tests do not submit achievements. Watcher tests cover deduplication, unknown-name rejection and offline journals.
 
-## Stato 0.9.0
+### 0.9.0–0.9.7 — Managed runtime
 
-Runtime Windows gestito direttamente: download Wine Staging 11.18 e DXMT 0.80 upstream, verifica dimensione/SHA-256, cache/staging/installazione atomica, annullamento e backup dei registri dei container prima della migrazione. Rimossa la ricerca automatica di CrossOver e la scelta obbligatoria di un eseguibile esterno. Verificata l'estrazione dei pacchetti reali e l'avvio del Wine privato con `--version`; nessun container reale viene modificato dai test.
+Runtime provisioning downloads verified upstream packages into staging and preserves container registry/module backups during migration. CrossOver discovery and mandatory external executable selection were removed. Metadata-only launch queries adopt installed games without reopening the store or redownloading payloads.
 
-Il comando helper `-deck-launch-metadata` legge solo i metadati di avvio, senza download del gioco. Verificato su Steam reale per Denshattack. Le installazioni esterne vengono adottate usando l'eseguibile dichiarato; il ripiego `steam://` è eliminato. Il servizio Steamworks Windows può essere installato anche con schema trofei vuoto, senza sintetizzare sblocchi. Gli avvii Windows con Steam SDK riconosciuto ma senza ponte locale pronto sono bloccati anziché ripiegare sul client. Le versioni Mac contenenti Steamworks originale vengono segnalate non supportate dal servizio autonomo; è disponibile la scelta Windows quando pubblicata.
+The final 0.9.7 configuration uses WineCX FOSS 24.0.7_7, supporting libraries and DXMT 0.80. It verifies Metal exports and Windows initialization. Sektori reached its menu on the development M1 on October 22, 2026. This does not certify other games, Steam synchronization or DX12 compatibility.
 
-DXMT gestisce DX10/11; i bootstrapper Unreal con modulo D3D11 e senza scelta esplicita usano DX11. Nessuna copia di D3DMetal da CrossOver è distribuita. Titoli DX12-only/DRM/anti-cheat e i giochi nativi con SDK Steam originale non sono universalmente supportati. La compatibilità reale di Denshattack nel nuovo motore non è certificata dal test `--version`. Restano le limitazioni cloud/trofei indicate per le versioni precedenti.
+### 0.10.0 and later
+
+Post-session Auto-Cloud upload, pending retries and explicit conflict resolution were implemented. Real testing completed a deduplicated unchanged-content cycle; newly generated progress across devices still needs full validation. Version 0.14.2 added one retry for failed inventory reads in a fresh session and safer disconnected-session handling, without automatically retrying writes through that mechanism.
+
+## Acceptance checks for real gameplay
+
+- Preflight returns the correct account, App ID and interpretable UFS metadata without the graphical client.
+- Conflicting progress across devices preserves both copies until a choice.
+- An interrupted transfer preserves recoverable originals and backups.
+- New progress created on the Mac reaches a second device after confirmed upload; the reverse path is tested separately.
+- An online session changes Steam's reported playtime without counting helpers, failed launches or unsupported offline time.
+- An actually earned achievement reaches Steam without changing unrelated achievements or installing the official client.
+- Direct launch remains usable when the service is offline or disabled, subject to game requirements.
+
+## Primary references
+
+- [Steam Cloud and Auto-Cloud](https://partner.steamgames.com/doc/features/cloud)
+- [SteamAPI_Init requirements](https://partner.steamgames.com/doc/api/steam_api)
+- [User statistics and achievements](https://partner.steamgames.com/doc/api/ISteamUserStats)
+- [GameNative Steam service](https://github.com/utkarshdalal/GameNative/blob/master/app/src/main/java/app/gamenative/service/SteamService.kt)
+- [GameNative Auto-Cloud](https://github.com/utkarshdalal/GameNative/blob/master/app/src/main/java/app/gamenative/service/SteamAutoCloud.kt)
+- [SteamKit generated cloud messages](https://github.com/SteamRE/SteamKit/blob/master/SteamKit2/SteamKit2/Base/Generated/SteamMsgCloud.cs)
+- [Cruelty Squad store page](https://store.steampowered.com/app/1388770/Cruelty_Squad/)

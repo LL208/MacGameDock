@@ -67,6 +67,20 @@ enum DeckFocusNavigation {
         }
     }
 }
+struct DeckHomeGesture {
+    private var homeHeld = false
+    private var menuStart: TimeInterval?
+    private var menuFired = false
+    mutating func poll(home: Bool, menu: Bool, eligible: Bool, now: TimeInterval) -> Bool {
+        let homePressed = home && !homeHeld; homeHeld = home
+        if !eligible || !menu || homePressed { menuStart = nil; menuFired = false }
+        else {
+            if menuStart == nil { menuStart = now }
+            if !menuFired, now - (menuStart ?? now) >= 1.2 { menuFired = true; return true }
+        }
+        return homePressed
+    }
+}
 struct DeckControllerGlyph: Equatable {
     var symbol: String
     var label: String
@@ -81,6 +95,11 @@ final class DeckControllerInput: ObservableObject {
     @Published private(set) var glyphs: [DeckCommand: DeckControllerGlyph] = [:]
     var swapConfirmBack = false { didSet { if oldValue != swapConfirmBack { repeatInput.reset(); device = nil } } }
     var bigPicture = false
+    var gameRunning = false
+    var sessionMenuVisible = false
+    var navigationSuspended = false
+    private var requiresNeutral = false
+    func synchronizeNavigation() { requiresNeutral = true }
     func glyph(_ command: DeckCommand) -> DeckControllerGlyph {
         glyphs[command] ?? DeckControllerGlyph(symbol: "gamecontroller", label: command == .confirm ? "A" : command == .back ? "B" : command == .search ? "X" : command == .favorite ? "Y" : "Menu")
     }
@@ -89,8 +108,7 @@ final class DeckControllerInput: ObservableObject {
     private var keyboard: Any?
     private var repeatInput = DeckInputRepeater()
     private var device: ObjectIdentifier?
-    private var backgroundMenuStart: TimeInterval?
-    private var backgroundMenuFired = false
+    private var homeGesture = DeckHomeGesture()
     func start() {
         guard timer == nil else { return }
         GCController.shouldMonitorBackgroundEvents = true
@@ -98,7 +116,7 @@ final class DeckControllerInput: ObservableObject {
         RunLoop.main.add(value, forMode: .common); timer = value
         keyboard = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
-                guard let self, self.bigPicture, !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.control) else { return false }
+                guard let self, (self.bigPicture || self.sessionMenuVisible), !self.navigationSuspended, !event.modifierFlags.contains(.command), !event.modifierFlags.contains(.control) else { return false }
                 let command: DeckCommand?
                 switch event.keyCode {
                 case 123: command = .left
@@ -125,6 +143,7 @@ final class DeckControllerInput: ObservableObject {
     func stop() {
         timer?.invalidate(); timer = nil
         if let keyboard { NSEvent.removeMonitor(keyboard) }; keyboard = nil
+        for controller in GCController.controllers() { controller.extendedGamepad?.buttonHome?.preferredSystemGestureState = .enabled }
         GCController.shouldMonitorBackgroundEvents = false
     }
     private func updateGlyphs(_ controller: GCController) {
@@ -138,7 +157,7 @@ final class DeckControllerInput: ObservableObject {
                       .search: glyph(g.buttonX, "x.circle", playstation ? "□" : "X"), .favorite: glyph(g.buttonY, "y.circle", playstation ? "△" : "Y"),
                       .previousSection: glyph(g.leftShoulder, "l1.rectangle.roundedbottom", "L1"), .nextSection: glyph(g.rightShoulder, "r1.rectangle.roundedbottom", "R1"),
                       .previousPage: glyph(g.leftTrigger, "l2.rectangle.roundedtop", "L2"), .nextPage: glyph(g.rightTrigger, "r2.rectangle.roundedtop", "R2"),
-                      .menu: glyph(g.buttonMenu, "line.3.horizontal.circle", "Menu"), .interfaceMode: glyph(g.buttonOptions, "rectangle.on.rectangle", playstation ? "Share" : "View")]
+                      .home: glyph(g.buttonHome, "house.circle", playstation ? "PS" : "Home"), .menu: glyph(g.buttonMenu, "line.3.horizontal.circle", "Menu"), .interfaceMode: glyph(g.buttonOptions, "rectangle.on.rectangle", playstation ? "Share" : "View")]
         } else if let g = controller.microGamepad {
             let a = glyph(g.buttonA, "a.circle", "A"), b = glyph(g.buttonX, "x.circle", "X")
             glyphs = [.confirm: swapConfirmBack ? b : a, .back: swapConfirmBack ? a : b, .menu: glyph(g.buttonMenu, "line.3.horizontal.circle", "Menu")]
@@ -153,7 +172,7 @@ final class DeckControllerInput: ObservableObject {
         }
         guard let controller = (current.map { c in c.physicalInputProfile.buttons.values.contains { $0.isPressed } ? c : nil } ?? nil) ?? active ?? current ?? devices.first else {
             if connected { connected = false; controllerName = "Controller scollegato · ricollegalo per continuare"; battery = nil }
-            device = nil; repeatInput.reset(); backgroundMenuStart = nil; backgroundMenuFired = false; return
+            device = nil; repeatInput.reset(); homeGesture = DeckHomeGesture(); return
         }
         let identifier = ObjectIdentifier(controller)
         var pressed: Set<DeckCommand> = []
@@ -181,16 +200,19 @@ final class DeckControllerInput: ObservableObject {
         let level = controller.battery.map { $0.batteryLevel >= 0 ? Int($0.batteryLevel * 100) : nil } ?? nil
         if battery != level { battery = level }
         let now = ProcessInfo.processInfo.systemUptime
-        guard NSApplication.shared.isActive else {
-            // Only a deliberate long Menu press returns from a game. Never consume its A/B inputs.
+        let home = controller.extendedGamepad?.buttonHome
+        home?.preferredSystemGestureState = gameRunning ? .disabled : .enabled
+        if homeGesture.poll(home: home?.isPressed == true, menu: pressed.contains(.menu), eligible: gameRunning || (!NSApplication.shared.isActive && bigPicture), now: now) { commands.send(.home) }
+        guard (NSApplication.shared.isActive || sessionMenuVisible), !navigationSuspended else {
             repeatInput.reset(pressed)
-            if bigPicture && pressed.contains(.menu) {
-                if backgroundMenuStart == nil { backgroundMenuStart = now }
-                if !backgroundMenuFired, now - (backgroundMenuStart ?? now) >= 1.2 { backgroundMenuFired = true; commands.send(.home) }
-            } else { backgroundMenuStart = nil; backgroundMenuFired = false }
             return
         }
-        backgroundMenuStart = nil; backgroundMenuFired = false
+
+        if requiresNeutral {
+            repeatInput.reset(pressed)
+            if pressed.isEmpty { requiresNeutral = false }
+            return
+        }
         for command in repeatInput.poll(pressed, now: now) { commands.send(command) }
     }
 }

@@ -186,7 +186,7 @@ namespace DepotDownloader
             {
                 if (!InitializeSteam(username, password)) return 1;
                 try { await ContentDownloader.ExportDeckLaunchMetadata(appId, launchMetadata); return 0; }
-                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = "engine_error", errorType = error.GetType().Name }); return 1; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = "engine_error", errorType = error.GetType().Name, frames = new System.Diagnostics.StackTrace(error, false).GetFrames()?.Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name).Take(8).ToArray() }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
             var achievementsFile = GetParameter<string>(args, "-deck-achievements");
@@ -199,14 +199,14 @@ namespace DepotDownloader
                     else await ContentDownloader.ExportDeckWorkshop(appId, workshopFile, GetParameter<string>(args, "-deck-search"), GetParameter<uint>(args, "-deck-page", 1));
                     return 0;
                 }
-                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name, frames = new System.Diagnostics.StackTrace(error, false).GetFrames()?.Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name).Take(8).ToArray() }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
             var cloudUpload = GetParameter<string>(args, "-deck-cloud-upload");
             if (cloudUpload != null) {
                 if (!InitializeSteam(username, password)) return 1;
                 try { await ContentDownloader.UploadDeckCloud(appId, cloudUpload); return 0; }
-                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException known ? known.Code : "engine_error", errorType = error.GetType().Name, frames = new System.Diagnostics.StackTrace(error, false).GetFrames()?.Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name).Take(8).ToArray() }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
             var cloudRequest = GetParameter<string>(args, "-deck-cloud-download");
@@ -220,7 +220,7 @@ namespace DepotDownloader
                     else { if (cloudDirectory == null) throw new DeckCloudException("invalid_request"); await ContentDownloader.DownloadDeckCloud(appId, cloudRequest, cloudDirectory); }
                     return 0;
                 }
-                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name, frames = new System.Diagnostics.StackTrace(error, false).GetFrames()?.Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name).Take(8).ToArray() }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
 
@@ -229,7 +229,7 @@ namespace DepotDownloader
             {
                 if (!InitializeSteam(username, password)) return 1;
                 try { await ContentDownloader.ExportDeckCloudInventory(appId, cloudInventory); return 0; }
-                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name }); return 1; }
+                catch (Exception error) { DeckIntegration.Emit(new { type = "cloud_error", code = error is DeckCloudException cloudError ? cloudError.Code : "engine_error", errorType = error.GetType().Name, frames = new System.Diagnostics.StackTrace(error, false).GetFrames()?.Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name).Take(8).ToArray() }); return 1; }
                 finally { ContentDownloader.ShutdownSteam3(); }
             }
 

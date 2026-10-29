@@ -278,10 +278,11 @@ final class OwnedRuntime: ObservableObject {
     }
 }
 struct OwnedRuntimeStatus: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @ObservedObject var engine: OwnedRuntime
     var body: some View {
         if engine.busy {
-            VStack(alignment: .leading, spacing: 8) { Text(engine.message).font(.caption); ProgressView(value: engine.progress); Button("Annulla preparazione") { engine.cancel() } }.padding(12)
+            VStack(alignment: .leading, spacing: 8) { Text(L10n.text(engine.message)).font(.caption); ProgressView(value: engine.progress); Button(L10n.text("Annulla preparazione")) { engine.cancel() } }.padding(12)
         }
     }
 }

@@ -1,93 +1,126 @@
-# MacGameDeck — anteprima 0.13.0
+<p align="center">
+  <img src="Branding/AppIcon.png" width="160" alt="MacGameDeck icon: an executable file shaped like a controller">
+</p>
 
-Launcher Swift/SwiftUI per Mac Apple Silicon, macOS 13+. Apri **MacGameDock.xcodeproj**, scegli **MacGameDeck / My Mac** e premi ⌘R. Il progetto genera MacGameDeck.app; Package.swift include i test della logica.
+# MacGameDeck
 
-## Esperienza quotidiana
+**A controller-friendly game launcher for Apple Silicon Macs.**
 
-- Home **Continua a giocare**, preferiti, ricerca, raccolte personali e giochi nascosti. Ordinamento per titolo, ultima partita, ore Steam o aggiunta recente.
-- Premi il titolo per aprire la pagina del gioco: installazione/avvio, attività, trofei, salvataggi, Workshop e manutenzione. Le informazioni dell’installazione si aggiornano quando termina il download.
-- Compatibilità distinta fra versione da provare, processo avviato e funzionamento confermato dall’utente. Un processo avviato non certifica una partita funzionante.
-- Avvio con indicazione dei passaggi e annullamento della preparazione. Gli errori cloud offrono Riprova oppure Gioca con i salvataggi locali.
-- Impostazioni centralizzate: tema di sistema/scuro/chiaro, interfaccia più grande, ripresa dei download all’apertura e pausa durante il gioco.
+Install and launch supported Windows games from a native SwiftUI interface, with an automatically managed Wine runtime, Steam integration and a full-screen controller interface.
 
-## Installazione e download
+**Development preview · 0.15.0 · macOS 13+ · Apple Silicon**
 
-Steam usa la sessione salvata senza QR a ogni operazione e senza lettura del Portachiavi all’avvio. Revoche o scadenze effettive richiedono un nuovo accesso. L’account viene verificato per ogni operazione. Le credenziali sono nella cartella dati privata, con permessi 0600/0700: non includere quella cartella nei sorgenti o nei report.
+MacGameDeck is the app name; **MacGameDock** is the repository and Xcode project name. This is an independent community project, not affiliated with Valve, Apple or CodeWeavers.
 
-La versione Mac o Windows viene scelta prima del download. La disponibilità di un port Mac non certifica il funzionamento su Apple Silicon: i giochi nativi che richiedono Steamworks originale non sono ancora supportati dal percorso autonomo.
+## What you can do
 
-La coda ha pausa, ripresa, priorità, annullamento, progresso e cronologia. I file parziali restano disponibili; rimuovere una voce non disinstalla il gioco. È disponibile un limite aggregato dei blocchi scaricati da Steam (1/5/10/25 MiB/s), applicato alla prossima partenza/ripresa. La misura è indicativa e non comprende separatamente header HTTP, pacchetti del motore o trasferimenti cloud. Il completamento mostra un avviso nell’app con Gioca.
+- Browse your Steam library, including Steam Families entries, and detect games installed locally.
+- Choose an available Mac or Windows version before installing.
+- Manage downloads with pause, resume, cancellation, priority, bandwidth limits and history.
+- Switch between desktop and Big Picture interfaces with **⌘⇧B** or the on-screen buttons.
+- Navigate with supported controllers, using device-specific button symbols and an optional Confirm/Back swap.
+- Open native game pages with descriptions, player counts, supported play modes and automatically loaded achievements.
+- Synchronize supported Steam Auto-Cloud saves, with backups and explicit conflict handling.
+- Browse Workshop items, download mods and manage their activation.
+- Use SteamGridDB covers, backgrounds and logos with your own API key.
+- Follow the Mac's language automatically, or choose **English** or **Italian** in Settings.
 
-Puoi scegliere una cartella o un SSD esterno per i nuovi giochi; ogni lavoro conserva la destinazione. Un disco scollegato genera un errore, senza ricreare la sua cartella su un altro volume. Nella pagina di un gioco gestito puoi verificarne i file e riparare i componenti, oppure trasferire il container in una destinazione vuota: la copia viene verificata per hash, inclusi i collegamenti Wine, e l’originale resta conservato. Il trasferimento con mod registrate è sospeso finché non è supportato il loro aggiornamento dei percorsi.
+## Getting started
 
-**Disinstalla** sposta i file del gioco in Uninstalled/UUID/Game, conservando il prefix Windows e la voce del catalogo. Non elimina definitivamente dati e non libera spazio finché non rimuovi manualmente il backup. Le installazioni esterne non vengono disinstallate dall’app. **Rimuovi dalla libreria** è un’operazione distinta che conserva tutti i file.
+### Build with Xcode
 
-## Steam Cloud
+1. Clone this repository.
+2. Open **MacGameDock.xcodeproj**.
+3. Select the **MacGameDeck** scheme and **My Mac** destination.
+4. Build and run with **⌘R**.
+5. Connect your Steam account in the app and choose a game.
 
-L’elenco si carica entrando nella pagina Cloud. Prima dell’avvio vengono confrontati hash e date per i salvataggi Auto-Cloud dichiarati: copia cloud più recente scaricata in staging e verificata; locale più recente conservata. Date uguali con dati diversi o percorsi ambigui sospendono l’avvio. Le copie sostituite sono salvate in Cloud/Backups.
+The Steam helper and .NET runtime are bundled. The Windows runtime and supported dependencies are downloaded automatically when needed. Rosetta 2 is required for x86 components on Apple Silicon.
 
-La 0.10.0 aggiunge l’invio dopo la partita dei file Auto-Cloud modificati, con snapshot verificato, confronto con la versione remota vista prima dell’avvio e rilettura del server. I nuovi file vengono individuati solo nei percorsi e pattern dichiarati dal gioco. Se un altro dispositivo ha cambiato lo stesso file, la sincronizzazione si ferma: non viene scelta una copia automaticamente solo perché ha una data maggiore. Le rimozioni non vengono propagate.
+The official Steam and CrossOver applications are not required by the managed launch path. A valid Steam account, game licenses and access to Valve services are still required for Steam features. Compatibility varies by game.
 
-Gli invii non completati restano in Cloud/Pending e vengono riprovati all’apertura, al prossimo avvio del gioco o con **Sincronizza ora**. I backup delle copie inviate restano in Cloud/Uploads. Per un conflitto puoi scegliere esplicitamente la copia Mac o Steam: prima della risoluzione viene salvata la copia remota e, se sostituita, anche quella locale.
+### Standalone builds
 
-**Ambito e verifica:** Auto-Cloud con percorsi supportati; il cloud tramite sole Steam API, percorsi trasformati e trasferimenti cifrati non sono supportati. La prova reale su Cruelty Squad ha letto cinque file, verificato un backup da 542 byte e completato il ciclo di batch/rilettura con un contenuto identico già presente: Steam lo ha deduplicato. Questa prova non certifica il trasferimento HTTP di nuovi progressi ottenuti in una partita; tale percorso è coperto da test con servizio simulato e resta da verificare con una partita reale.
+Development builds are signed ad hoc, without Developer ID notarization or automatic app updates. There is currently no notarized public release. Build from source if no downloadable release has been published.
 
-## Ore e trofei Steam
+`scripts/build-app.sh` produces `dist/MacGameDeck.app` in environments that support the SDK's Swift compiler plugins. Xcode is the verified build route on the development machine.
 
-La pagina gioco distingue tempo locale, ore lette da Steam, data dell’ultima lettura e numero di trofei ancora in attesa di conferma. Aggiorna ore e trofei rilegge il server. Le ore locali non vengono sommate a quelle Steam.
+## Library and downloads
 
-Nei giochi Windows compatibili il ponte Steam API rileva gli eventi, mostra notifiche native e conserva un journal degli invii non confermati. La partita viene segnalata a Steam solo mentre il processo monitorato è attivo; le ore vengono rilette alla chiusura. Non vengono aggiunte retroattivamente ore offline. Lo sblocco di un nuovo trofeo e il popup in fullscreen richiedono ancora verifica reale per gioco. I dati già presenti su Steam sono stati letti su account reale.
+The library supports recent games, favorites, collections, hidden games and sorting. Each game page brings together installation, launch, activity, achievements, saves, Workshop and maintenance.
 
-La sostituzione delle DLL Steam API è reversibile e conserva gli originali. Non sono promessi DRM, anti-cheat, multiplayer o Steam Input equivalenti al client ufficiale.
+Download sessions are reused across launches; a revoked or expired session requires a new login. Credentials are stored in the private application data directory with file/directory permissions of 0600/0700, rather than prompting for Keychain access at startup. They are not separately encrypted from the disk. Do not share that directory.
 
-## Workshop e controller
+Downloads preserve partial files when paused or cancelled. Removing a completed history entry does not uninstall the game. The optional 1/5/10/25 MiB/s limit applies to aggregate Steam content blocks at the next worker start or resume; it does not include all HTTP overhead, engine packages or cloud transfers.
 
-Ricerca e download del Workshop sono nativi. Dopo la copia nella cartella scelta dall’utente, la mod compare nell’elenco persistente: Mostra file, Disattiva e Riattiva. La disattivazione sposta la cartella fuori dal gioco e la riattivazione rifiuta di sovrascrivere cartelle esistenti. Loader, dipendenze, aggiornamenti e ordine di caricamento non sono automatizzati; la presenza dei file non certifica che la mod sia caricata dal gioco.
+Choose a folder or external drive for new installations. Managed containers can be transferred to an empty destination with hash verification while preserving the original. Transfers with registered mods are currently blocked because mod path migration is not implemented.
 
-La 0.11.0 apre una modalità Big Picture a schermo intero: libreria, pagina gioco, installazione, download, account/QR e presenza, trofei, cloud, Workshop, mod, impostazioni e log sono navigabili dal controller. Ricerca e scelta delle cartelle hanno tastiera e browser interni. A/✕ conferma, B/○ torna indietro, X/□ cerca, Y/△ preferito, L1/R1 cambia sezione, L2/R2 cambia pagina, Menu torna alla Home. Dal gioco, tenere Menu per 1,2 secondi riporta la finestra in primo piano, senza terminare il gioco. Le normali pressioni del controller in background non navigano nell’app.
+**Uninstall** moves game files to `Uninstalled/UUID/Game`, preserving the Windows prefix and catalog entry. It does not permanently delete data or reclaim space until the backup is removed manually. **Remove from library** preserves all files. External installations are not uninstalled by the app.
 
-La modalità desktop resta disponibile nelle impostazioni; dal desktop si rientra con «Modalità controller». GameController di macOS gestisce rilevamento e batteria. Le icone provengono dal profilo del controller attivo e cambiano passando fra i dispositivi riconosciuti da macOS (PlayStation, Xbox e altri profili compatibili). «Inverti Conferma e Indietro» è persistente e scambia anche i relativi suggerimenti, senza cambiare i comandi interni al gioco. Abbinamento Bluetooth, permessi macOS, Steam Guard sul telefono e rimappatura di sistema richiedono le rispettive interfacce. Controller virtuale e profili di input per gioco restano da implementare. I test automatici verificano ripetizione, focus, cronologia e conferme; la prova con un controller fisico resta distinta dalla navigazione tramite tastiera.
+## Windows compatibility
 
-## Motore Windows e compatibilità
+The app downloads hash-pinned **WineCX FOSS 24.0.7_7**, supporting macOS libraries and **DXMT 0.80**. It checks Metal exports and initializes a test Windows prefix before preparing games. Container migrations back up registry files and Wine modules while preserving native Microsoft DLLs and saves.
 
-WineCX FOSS 24.0.7_7 e DXMT 0.80 vengono scaricati automaticamente da release upstream con dimensioni e SHA-256 fissati, insieme alle librerie macOS di supporto. Non servono le app Steam, CrossOver, Wine o Homebrew. Servono account/licenze Valve e Rosetta 2 per i componenti x86 su Apple Silicon.
+Supported Steam redistributables and Visual C++ components are prepared automatically. DXMT supports DirectX 10/11; proprietary D3DMetal is not included. DX12-only games, anti-cheat, DRM and multiplayer may be unsupported. Native Mac games requiring the original Steamworks client are not supported by the autonomous launch path.
 
-Il controllo del motore include gli export Metal reali e il bootstrap Windows in un prefix di prova. I vecchi container vengono aggiornati con backup dei registri e dei moduli Wine, preservando le DLL Microsoft native. Le dipendenze Steam supportate e Visual C++ vengono preparate automaticamente.
+A running process is not proof that a game works. The app distinguishes launch detection from user-confirmed compatibility. Sektori reached its menu on the development M1 on October 22, 2026; this does not establish compatibility with other games. Requirement estimates are approximate, with no invented FPS predictions or automatically applied benchmark profiles.
 
-DXMT copre DirectX 10/11: non include D3DMetal proprietario e non garantisce i titoli DX12-only. Sektori è arrivato al menu su questo M1 il 22 ottobre 2026; ciò non certifica tutti i giochi. Le stime dei requisiti restano generiche e non applicano profili grafici né inventano FPS.
+## Steam Cloud, playtime and achievements
 
-## Verifiche e limiti della distribuzione
+Cloud files load automatically when entering the page. For supported Auto-Cloud mappings, launch preparation compares content hashes and timestamps, downloads newer remote files into verified staging and preserves newer local files. Equal timestamps with different content or ambiguous paths require attention. Replaced copies are backed up under `Cloud/Backups`.
 
-Build dell’app verificata in Xcode. La suite della logica è eseguita in una copia di test senza le sole viste SwiftUI: l’ambiente shell di Codex non esegue il plugin SwiftUIMacros della SDK Xcode 27. Le viste vengono invece compilate da Xcode e la pagina gioco è stata confermata visibile dall’utente in una libreria isolata. La suite attuale conta 108 test: 103 passati, 5 saltati e nessun fallimento. I test aggiunti coprono conflitti/cloud offline, invio e conferma con servizio simulato, preferenze persistenti, trasferimenti verificati e attivazione delle mod senza sovrascritture. Il runner C# verifica protocollo, account e limite aggregato di banda senza rete.
+After a session, changed files are snapshotted and compared against the remote revision observed before launch. Concurrent changes stop synchronization rather than silently selecting a winner. Failed uploads remain in `Cloud/Pending` for retry; uploaded snapshots remain in `Cloud/Uploads`. Conflict resolution explicitly chooses the Mac or Steam copy and preserves backups. Deletions are not propagated.
 
-La build è firmata ad hoc, senza notarizzazione o aggiornamento automatico dell’app. `scripts/build-app.sh` produce una build SwiftPM dove il compilatore supporta i plugin della SDK; qui usare il progetto Xcode.
+Cloud support is limited to recognized Auto-Cloud paths and patterns. SDK-only cloud, complex path transforms and encrypted transfers are unsupported. Real-account tests verified inventories and a deduplicated upload cycle with unchanged content; uploading newly earned progress between two devices still needs a full real-game validation.
 
-Le integrazioni Epic/GOG complete, aggiornamenti automatici dei giochi, profili grafici verificati, FPS misurati e modalità divano non sono ancora implementati. Vedi [stato degli interventi](docs/implementation-status-0.10.md). La [cronologia precedente](docs/history-through-0.9.7.md) è conservata separatamente per evitare descrizioni contraddittorie del comportamento attuale.
+For compatible Windows games, a reversible Steam API bridge records achievement events, requests native notifications and journals unconfirmed submissions. Steam confirms an unlock before it is marked synchronized. GamesPlayed is sent only while the monitored process is active; playtime is read back afterwards. Offline hours are not retroactively added. Local process time and Steam-reported time remain separate.
 
-Dati: ~/Library/Application Support/MacGameDock/. Per prove isolate: MACGAMEDOCK_DATA_DIRECTORY con percorso assoluto. Log ed esportazioni oscurano i token riconosciuti; non esportare sessioni o salvataggi senza verificarne il contenuto.
+A newly earned achievement and its full-screen notification still need per-game validation. Existing Steam data and an already-earned achievement round trip were tested on a real account. The bridge does not guarantee official-client-equivalent DRM, anti-cheat, multiplayer or Steam Input.
 
-## Componenti e sorgenti
+## Controllers and the in-game menu
 
-DepotDownloader 3.4.0 / SteamKit2 e le modifiche corrispondenti sono in Helpers/SteamDownloader/Source. integration.patch si applica al tag originale; patch-upstream.py riconosce i sorgenti già modificati senza invertirli. Il runtime .NET e le relative licenze sono nelle risorse. GSE è GPL; licenza, hash e archivio dei sorgenti sono inclusi. Wine e DXMT hanno note/licenze in Resources/RuntimeNotices.
+Big Picture covers the library, game pages, downloads, account, cloud, Workshop, settings and logs. Search and folder selection have controller-accessible interfaces. macOS GameController supplies discovery, battery information and button symbols for supported profiles; arbitrary HID devices are not guaranteed.
 
-Riferimenti: [Steam Cloud](https://partner.steamgames.com/doc/features/cloud), [SteamKit](https://github.com/SteamRE/SteamKit), [GameNative Auto-Cloud](https://github.com/utkarshdalal/GameNative/blob/master/app/src/main/java/app/gamenative/service/SteamAutoCloud.kt).
+**Home** opens the session menu; holding **Menu** for 1.2 seconds is the fallback when macOS reserves Home. The menu shows session time and achievements, provides resume/exit actions and links to system controller remapping. The game continues running while the menu is open, and some runtimes may still receive controller input.
 
-## Novità 0.12.0 · interfaccia e artwork
+Launching a game attempts to transfer focus and use the display containing MacGameDeck. Accessibility permission is requested only through the explicit window-management action. Exclusive full-screen games may refuse movement or cover external panels. Screen Recording permission is not required. Confirm/Back swapping affects the launcher, not game controls.
 
-Big Picture usa copertine verticali, uno sfondo e un logo del gioco selezionato, griglia adattiva e barra delle sezioni. Il pulsante Modalità PC in alto torna a mouse e tastiera; dal desktop il pulsante Big Picture riapre l’interfaccia controller. La scorciatoia comune è **⌘⇧B**; sui controller estesi il pulsante View/Share alterna le modalità mentre l’app è in primo piano. La scelta resta salvata tra gli avvii.
+## Artwork and Workshop
 
-**SteamGridDB:** inserisci la tua chiave API in Impostazioni → Copertine e sfondi. Puoi ottenerla da https://www.steamgriddb.com/profile/preferences/api . La chiave viene conservata nella cartella privata Credentials con permessi 0600 e non viene inviata ai server delle immagini. Non includerla nei report o nei sorgenti. Anche Big Picture permette di inserirla con una tastiera mascherata (⇧ cambia maiuscole/minuscole).
+Configure a personal [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api) in Settings → Covers and backgrounds. The key stays in the private credentials directory and is never sent to image CDNs. Assets include author attribution; the managed disk cache is limited to 256 MiB. Steam artwork or a placeholder is used as fallback.
 
-Per i giochi Steam la ricerca usa l’App ID; per gli altri store viene accettata solo una corrispondenza univoca del titolo normalizzato. Copertine, sfondi e loghi vengono scelti automaticamente fra gli asset statici, escludendo i risultati marcati NSFW o humor. Le immagini e gli autori sono memorizzati localmente; la cache gestita è limitata a 256 MiB e aggiornata dopo sette giorni. Il fallback usa gli artwork Steam; in assenza di immagini mostra un segnaposto. La connessione a SteamGridDB non è necessaria per avviare un gioco.
+Workshop browsing and downloads use native views. Mods are copied to a new folder selected for the game; disabling moves them out, and re-enabling refuses to overwrite existing content. Loaders, dependencies, update management and load order remain manual. Having files installed does not prove that the game has loaded a mod.
 
-### Riordino Home e Libreria · 0.12.1
+## Development and verification
 
-Le sezioni compaiono soltanto nella barra superiore. Ricerca, selezione dei giochi installati, preferiti, store, ordinamento, raccolte e importazione hanno un’area dedicata sopra le copertine. La griglia centrale contiene esclusivamente giochi; i comandi di paginazione sono separati in fondo. Le frecce del controller passano tra tab, filtri, giochi e pagine rispettando la larghezza delle rispettive righe.
+- Swift/SwiftUI application: `Sources/MacGameDock`
+- Logic tests: `Tests/MacGameDockTests`
+- Steam helper and corresponding source: `Helpers/SteamDownloader/Source`
+- Steam bridge source archive and notes: `Helpers/SteamBridge`
+- Icon source and saved concepts: [Branding](Branding/README.md)
 
-## Dettaglio del gioco · 0.13.0
+The latest recorded 0.15.0 validation passed **137 Swift tests**, with **5 skipped** and no failures, plus the C# protocol regressions and a native Xcode Release build. The logic harness omits SwiftUI views because the restricted shell cannot run the Xcode 27 SwiftUI macro plugin; Xcode compiles those views separately. These checks do not certify every game or hardware configuration.
 
-La pagina di ogni titolo, sia desktop sia Big Picture, mostra descrizione breve/estesa, generi, sviluppatore, modalità dichiarate dallo store e conteggio dei giocatori online su Steam con ora della lettura. I dati vengono caricati all’ingresso; ogni fonte fallisce indipendentemente dalle altre. Le informazioni dello store sono conservate sul Mac per l’uso offline.
+Run the helper regressions after restoring its pinned dependencies:
 
-La sezione **I tuoi trofei** si aggiorna automaticamente, con progresso, icone e anteprima dei trofei ottenuti. La cache è distinta per account e gioco; i trofei nascosti mantengono titolo e descrizione protetti finché non sono ottenuti. La lettura non modifica DLL o salvataggi. Gioca resta in primo piano, mentre organizzazione e manutenzione sono raccolte nelle opzioni di gestione.
+```sh
+dotnet run --project Helpers/SteamDownloader/Tests/SteamProtocolRegression.csproj
+```
 
-Il numero online è quello di Steam e non rappresenta il limite di giocatori per partita. Lo store raggruppa schermo condiviso e split-screen: l’app lo indica esplicitamente. Il massimo di giocatori locali non viene inventato se non è disponibile. Per titoli senza App ID Steam queste informazioni e i trofei Steam restano non disponibili. Riferimento: https://partner.steamgames.com/doc/webapi/ISteamUserStats .
+For isolated app testing, set `MACGAMEDOCK_DATA_DIRECTORY` to an absolute test directory. Normal data lives in `~/Library/Application Support/MacGameDock/`. Logs redact recognized credentials; inspect exports before sharing them.
+
+## Current limitations
+
+Full Epic/GOG login and autonomous downloads, automatic game updates, measured FPS, verified per-game graphics profiles, virtual controllers and per-game input profiles are not implemented. A complete VoiceOver and keyboard accessibility audit remains outstanding.
+
+See the [documentation index](docs/README.md), [latest implementation report](docs/implementation-status-0.15.md) and [historical notes](docs/history-through-0.9.7.md). Historical reports describe their own versions and are not current feature promises.
+
+## Open-source components
+
+DepotDownloader 3.4.0 / SteamKit2 modifications and corresponding source are included. `integration.patch` targets the upstream tag; `patch-upstream.py` recognizes already-patched source. Rebuilding the helper requires .NET SDK 9; see `Helpers/SteamDownloader/build-helper.sh`.
+
+GSE binaries include their GPL license, hashes and source archive. Wine, DXMT and supporting libraries have [runtime source notices](Sources/MacGameDock/Resources/RuntimeNotices/SOURCES.md). The .NET runtime includes its own license and third-party notices. Upstream license texts are preserved.
+
+## Feedback
+
+When reporting a problem, include your Mac chip, macOS version, app version, game/store, chosen platform, reproduction steps and a redacted log excerpt. Distinguish “process started” from “reached the menu” and “played successfully.” Never attach sessions, tokens or private saves.

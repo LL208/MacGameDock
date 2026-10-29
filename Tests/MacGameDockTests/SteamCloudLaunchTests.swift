@@ -25,6 +25,11 @@ final class SteamCloudLaunchTests: XCTestCase {
         print('MACGAMEDECK_EVENT:{"type":"account","steamID":"76561198000000000","username":"fixture"}', flush=True)
         def arg(key): return args[args.index(key)+1]
         if '-deck-cloud-inventory' in args:
+            marker=pathlib.Path(__file__).with_suffix('.reconnected')
+            if not marker.exists():
+                marker.touch()
+                print('MACGAMEDECK_EVENT:{"type":"cloud_error","code":"steam_NoConnection","errorType":"DeckCloudException"}',flush=True)
+                sys.exit(1)
             rule={'name':'0','children':[{'name':k,'value':v,'children':[]} for k,v in [('root','WinAppDataRoaming'),('path','Test'),('pattern','*.dat')]]}
             data={'schemaVersion':1,'steamID':'76561198000000000','appID':10,'changeNumber':'1','isDelta':False,'prefixes':['%WinAppDataRoaming%'],'files':[{'name':'Test/save.dat','sha1':hashlib.sha1(b'remote').hexdigest(),'size':6,'timestamp':int(time.time())-60,'state':0,'prefixIndex':0}],'ufs':{'name':'ufs','children':[{'name':'savefiles','children':[rule]}]}}
             pathlib.Path(arg('-deck-cloud-inventory')).write_text(json.dumps(data))

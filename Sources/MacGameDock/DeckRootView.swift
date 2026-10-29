@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct DeckRootView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @EnvironmentObject var library: Library
     @EnvironmentObject var experience: GameExperience
     @EnvironmentObject var social: SteamSocial
@@ -14,6 +15,7 @@ struct DeckRootView: View {
             else { DockView() }
         }
         .task {
+            library.gameSession.connect(controller)
             controller.bigPicture = enabled; controller.swapConfirmBack = experience.preferences.swapControllerConfirmBack == true; controller.start()
             big.onCancelSteam = { library.managedSteam.cancel() }
             await library.startAutomaticServices()
@@ -23,17 +25,22 @@ struct DeckRootView: View {
         .onChange(of: experience.preferences.swapControllerConfirmBack) { controller.swapConfirmBack = $0 == true }
         .onChange(of: enabled) { value in controller.bigPicture = value; big.cancelLoading(); fullScreen(value) }
         .onReceive(controller.commands) { command in
+            if command == .home && library.gameSession.canShowMenu { library.gameSession.toggleMenu(); return }
+            guard !controller.sessionMenuVisible, !controller.navigationSuspended else { return }
             if command == .interfaceMode { experience.settings { $0.bigPicture = !enabled } }
             else if command == .home {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 NSApplication.shared.windows.first(where: { $0.canBecomeMain && $0.isVisible })?.makeKeyAndOrderFront(nil)
             } else if command == .menu && !enabled { experience.settings { $0.bigPicture = true } }
         }
+        .onReceive(library.$running) { controller.gameRunning = !$0.isEmpty }
+        .onReceive(library.gameSession.$handoffPending) { controller.navigationSuspended = $0 }
         .onReceive(social.$profile) { value in if value != nil { library.achievements.flush() } }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in fullScreen(enabled); Task { await library.scanInstalledGames() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in guard !library.gameSession.menuVisible, !library.gameSession.handoffPending else { return }; Task { await library.scanInstalledGames() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in library.activity.checkpoint(); library.social.stop(); big.cancelLoading(); controller.stop() }
     }
     private func fullScreen(_ value: Bool) {
+        guard library.running.isEmpty, !library.gameSession.menuVisible, !library.gameSession.handoffPending else { return }
         guard let window = NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow ?? NSApplication.shared.windows.first(where: { $0.canBecomeMain && $0.isVisible }) else { return }
         if window.styleMask.contains(.fullScreen) != value { window.toggleFullScreen(nil) }
     }

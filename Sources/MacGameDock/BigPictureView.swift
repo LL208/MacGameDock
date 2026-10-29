@@ -3,6 +3,7 @@ import GameController
 import SwiftUI
 
 struct BigPictureView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @StateObject private var detail = GameDetailModel()
     @State private var advancedGame = false
     @ObservedObject var model: BigPictureModel
@@ -67,7 +68,7 @@ struct BigPictureView: View {
         }
     }
     private func action(_ id: String, _ title: String, _ symbol: String = "chevron.right", detail: String = "", enabled: Bool = true, run: @escaping () -> Void) -> DeckAction {
-        DeckAction(id: id, title: title, detail: detail, symbol: symbol, enabled: enabled, run: run)
+        DeckAction(id: id, title: L10n.text(title), detail: L10n.text(detail), symbol: symbol, enabled: enabled, run: run)
     }
     private var browsingLibrary: Bool { (model.page == .home || model.page == .library) && !dialog && model.picker == nil }
     private var navigationActions: [DeckAction] {
@@ -155,7 +156,7 @@ struct BigPictureView: View {
                 GameTrophySummary(detail: detail)
                 detailActionGrid(detailTrophyActions)
             }.padding(18).background(.black.opacity(0.2)).clipShape(RoundedRectangle(cornerRadius: 16))
-            Text("Salvataggi e contenuti").font(.title2.bold())
+            Text(L10n.text("Salvataggi e contenuti")).font(.title2.bold())
             detailActionGrid(communityGameActions)
             detailActionGrid(advancedGameActions)
         }.padding(8)
@@ -214,7 +215,8 @@ struct BigPictureView: View {
          action("grid-remove", "Scollega SteamGridDB", "link", enabled: artwork.configured) { model.ask("Rimuovere la chiave SteamGridDB da questo Mac? Le immagini già in cache restano disponibili.") { artwork.configure("") } }]
     }
     private var settingActions: [DeckAction] {
-        [controllerSwapAction, action("theme", "Tema desktop: " + experience.preferences.theme, "circle.lefthalf.filled") { let values = ["Sistema", "Scuro", "Chiaro"]; var value = experience.preferences.theme; cycle(&value, values); experience.settings { $0.theme = value } },
+        [action("language", "Lingua", "globe", detail: appLanguage.preference.title) { appLanguage.cycle() },
+         controllerSwapAction, action("theme", "Tema desktop: " + experience.preferences.theme, "circle.lefthalf.filled") { let values = ["Sistema", "Scuro", "Chiaro"]; var value = experience.preferences.theme; cycle(&value, values); experience.settings { $0.theme = value } },
          action("resume", "Ripresa automatica: " + yes(experience.preferences.resumeDownloads), "play") { experience.settings { $0.resumeDownloads.toggle() } },
          action("pause", "Pausa download mentre giochi: " + yes(experience.preferences.pauseWhilePlaying), "pause") { experience.settings { $0.pauseWhilePlaying.toggle() } },
          action("bandwidth", "Limite banda: " + bandwidth, "speedometer") { let values = [0, 1024, 5120, 10240, 25600]; let old = experience.preferences.bandwidthLimitKBPS ?? 0; let value = values[((values.firstIndex(of: old) ?? 0) + 1) % values.count]; experience.settings { $0.bandwidthLimitKBPS = value == 0 ? nil : value } },
@@ -322,7 +324,7 @@ struct BigPictureView: View {
                                     }.id("library-top")
                                     Divider().overlay(.white.opacity(0.12))
                                     featuredSummary
-                                    if libraryGameActions.isEmpty { Text("Nessun gioco corrisponde ai filtri selezionati.").foregroundStyle(.secondary).padding(.vertical, 24) }
+                                    if libraryGameActions.isEmpty { Text(L10n.text("Nessun gioco corrisponde ai filtri selezionati.")).foregroundStyle(.secondary).padding(.vertical, 24) }
                                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: columns), spacing: 18) {
                                         ForEach(libraryGameActions) { item in tile(item).id(item.id) }
                                     }
@@ -351,6 +353,7 @@ struct BigPictureView: View {
             if isGameDetail, let game { detail.load(game, library: library) }
             else { detail.cancel() }
         }
+        .onChange(of: appLanguage.code) { _ in if isGameDetail, let game { detail.load(game, library: library) } }
         .onChange(of: library.data.steamAccount?.steamID) { _ in if isGameDetail, let game { detail.load(game, library: library) } }
         .onReceive(controller.commands) { handle($0) }
         .onReceive(library.$installSelection) { selected in if let selected { library.installSelection = nil; navigate(.install(selected.id)) } }
@@ -362,86 +365,86 @@ struct BigPictureView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 7) {
-                Text("MacGameDeck").font(.system(size: 17, weight: .semibold)).foregroundStyle(.mint)
-                Text(model.picker?.title ?? model.keyboard?.title ?? model.page.title).font(.system(size: 34, weight: .bold)).lineLimit(1)
+                Text(L10n.text("MacGameDeck")).font(.system(size: 17, weight: .semibold)).foregroundStyle(.mint)
+                Text(L10n.text(model.picker?.title ?? model.keyboard?.title ?? model.page.title)).font(.system(size: 34, weight: .bold)).lineLimit(1)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 7) {
                 HStack(spacing: 14) {
-                    Button { experience.settings { $0.bigPicture = false } } label: { Label("Modalità PC", systemImage: "desktopcomputer") }
-                        .buttonStyle(.bordered).help("Passa a mouse e tastiera · ⌘⇧B")
-                    Label(controller.controllerName + (controller.battery.map { " · \($0)%" } ?? ""), systemImage: "gamecontroller.fill").font(.system(size: 14))
+                    Button { experience.settings { $0.bigPicture = false } } label: { Label(L10n.text("Modalità PC"), systemImage: "desktopcomputer") }
+                        .buttonStyle(.bordered).help(L10n.text("Passa a mouse e tastiera · ⌘⇧B"))
+                    Label(L10n.text(controller.controllerName + (controller.battery.map { " · \($0)%" } ?? "")), systemImage: "gamecontroller.fill").font(.system(size: 14))
                 }
-                Text("\(controller.label(.previousSection)) / \(controller.label(.nextSection))  Sezioni     \(controller.label(.previousPage)) / \(controller.label(.nextPage))  Pagine").font(.system(size: 14)).foregroundStyle(.white.opacity(0.65))
+                Text(L10n.text("\(controller.label(.previousSection)) / \(controller.label(.nextSection))  Sezioni     \(controller.label(.previousPage)) / \(controller.label(.nextPage))  Pagine")).font(.system(size: 14)).foregroundStyle(.white.opacity(0.65))
             }
         }
     }
     @ViewBuilder private var context: some View {
         if dialog {
-            Text(library.error ?? library.notice ?? model.confirmation ?? "").font(.system(size: 21)).lineLimit(8).textSelection(.enabled)
+            Text(L10n.text(library.error ?? library.notice ?? model.confirmation ?? "")).font(.system(size: 21)).lineLimit(8).textSelection(.enabled)
         } else if let picker = model.picker {
-            Text(picker.current.path).font(.system(size: 18)).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
-            Text("Scegli una cartella con \(controller.label(.confirm)). \(controller.label(.back)) annulla. I dischi esterni sono in Dischi e SSD collegati.").font(.system(size: 16))
+            Text(L10n.text(picker.current.path)).font(.system(size: 18)).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
+            Text(L10n.text("Scegli una cartella con \(controller.label(.confirm)). \(controller.label(.back)) annulla. I dischi esterni sono in Dischi e SSD collegati.")).font(.system(size: 16))
         } else {
             if let game {
                 HStack(spacing: 22) {
                     GameArtwork(game: game).frame(width: 180, height: 100)
                     VStack(alignment: .leading, spacing: 7) {
                         Text(game.title).font(.system(size: 27, weight: .semibold)).lineLimit(2)
-                        Text(experience.compatibility(game)).font(.system(size: 17)).foregroundStyle(.mint)
+                        Text(L10n.text(experience.compatibility(game))).font(.system(size: 17)).foregroundStyle(.mint)
                         HStack {
-                            Text(activity.label(game))
-                            if let minutes = game.steamMinutes { Text(String(format: "· %.1f ore Steam", Double(minutes) / 60)) }
-                            if isGameDetail, detail.trophiesLoaded { Text("· \(detail.unlocked)/\(detail.trophies.count) trofei") }
-                            else if !isGameDetail, let count = game.steamAchievementsUnlocked, let total = game.steamAchievementsTotal { Text("· \(count)/\(total) trofei") }
+                            Text(L10n.text(activity.label(game)))
+                            if let minutes = game.steamMinutes { Text(L10n.text(String(format: "· %.1f ore Steam", Double(minutes) / 60))) }
+                            if isGameDetail, detail.trophiesLoaded { Text(L10n.text("· \(detail.unlocked)/\(detail.trophies.count) trofei")) }
+                            else if !isGameDetail, let count = game.steamAchievementsUnlocked, let total = game.steamAchievementsTotal { Text(L10n.text("· \(count)/\(total) trofei")) }
                         }.font(.system(size: 16)).foregroundStyle(.white.opacity(0.7))
-                        if let stage = library.launchStages[game.id] { Text(stage).foregroundStyle(.mint) }
-                        if let status = library.cloudStatuses[game.id] { Text(status).font(.system(size: 15)).lineLimit(2) }
-                        if let status = library.gameStatus[game.id] { Text(status).font(.system(size: 15)).lineLimit(2) }
+                        if let stage = library.launchStages[game.id] { Text(L10n.text(stage)).foregroundStyle(.mint) }
+                        if let status = library.cloudStatuses[game.id] { Text(L10n.text(status)).font(.system(size: 15)).lineLimit(2) }
+                        if let status = library.gameStatus[game.id] { Text(L10n.text(status)).font(.system(size: 15)).lineLimit(2) }
                         let pending = achievements.pendingCount(game, owner: library.data.steamAccount?.steamID)
-                        if pending > 0 { Text("\(pending) trofei in attesa di conferma Steam").font(.system(size: 15)).foregroundStyle(.orange) }
+                        if pending > 0 { Text(L10n.text("\(pending) trofei in attesa di conferma Steam")).font(.system(size: 15)).foregroundStyle(.orange) }
                     }
                 }
             }
             if model.page == .home || model.page == .library {
-                Text("\(games.count) giochi · Pagina \(model.pageNumber + 1) · \(controller.label(.favorite)) aggiunge il gioco selezionato ai preferiti").font(.system(size: 16)).foregroundStyle(.white.opacity(0.65))
+                Text(L10n.text("\(games.count) giochi · Pagina \(model.pageNumber + 1) · \(controller.label(.favorite)) aggiunge il gioco selezionato ai preferiti")).font(.system(size: 16)).foregroundStyle(.white.opacity(0.65))
             }
             if case .install = model.page {
-                Text("Destinazione: " + (game?.storageContainer ?? experience.preferences.storageRoot ?? "Cartella dati MacGameDeck")).font(.system(size: 16)).lineLimit(2)
+                Text(L10n.text("Destinazione: " + (game?.storageContainer ?? experience.preferences.storageRoot ?? "Cartella dati MacGameDeck"))).font(.system(size: 16)).lineLimit(2)
                 if game != nil, let insights = model.insights {
-                    Text("RAM minima pubblicata: " + (insights.minimumRAM(for: .windows).map { "\($0) GB" } ?? "non disponibile") + " · " + library.machine.chip + " · \(library.machine.memoryGB) GB RAM").font(.system(size: 16)).foregroundStyle(.white.opacity(0.7))
+                    Text(L10n.text("RAM minima pubblicata: " + (insights.minimumRAM(for: .windows).map { "\($0) GB" } ?? "non disponibile") + " · " + library.machine.chip + " · \(library.machine.memoryGB) GB RAM")).font(.system(size: 16)).foregroundStyle(.white.opacity(0.7))
                 }
             }
             if model.page == .downloads {
-                Text("\(queue.pending.count) in gestione · \(queue.history.count) nella cronologia").font(.system(size: 18))
+                Text(L10n.text("\(queue.pending.count) in gestione · \(queue.history.count) nella cronologia")).font(.system(size: 18))
                 if let active = queue.pending.first(where: { $0.state == .active }) {
                     HStack(spacing: 20) {
                         GameArtwork(game: active.game).frame(width: 180, height: 90)
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(active.game.title).font(.system(size: 22, weight: .semibold))
+                            Text(L10n.text(active.game.title)).font(.system(size: 22, weight: .semibold))
                             ProgressView(value: steam.progress).tint(.mint)
-                            Text(steam.message).font(.system(size: 16)).lineLimit(2)
+                            Text(L10n.text(steam.message)).font(.system(size: 16)).lineLimit(2)
                         }
                     }
                 }
-                if let error = queue.storageError { Text(error).foregroundStyle(.orange) }
+                if let error = queue.storageError { Text(L10n.text(error)).foregroundStyle(.orange) }
             }
             if model.page == .account {
-                Text(social.profile?.name ?? (library.data.steamAccount == nil ? "Collega il tuo account per usare la libreria Steam" : "Account Steam collegato")).font(.system(size: 22, weight: .semibold))
-                if let qr = steam.qr { HStack(spacing: 24) { Image(nsImage: qr).interpolation(.none).resizable().frame(width: 200, height: 200).padding(10).background(.white).cornerRadius(12); Text("Scansiona il QR con Steam Guard sul telefono. La sessione viene ricordata: non servirà ripetere il login a ogni download.").font(.system(size: 20)).frame(maxWidth: 500) } }
-                if !library.steamMessage.isEmpty { Text(library.steamMessage).font(.system(size: 16)).lineLimit(2) }
+                Text(L10n.text(social.profile?.name ?? (library.data.steamAccount == nil ? "Collega il tuo account per usare la libreria Steam" : "Account Steam collegato"))).font(.system(size: 22, weight: .semibold))
+                if let qr = steam.qr { HStack(spacing: 24) { Image(nsImage: qr).interpolation(.none).resizable().frame(width: 200, height: 200).padding(10).background(.white).cornerRadius(12); Text(L10n.text("Scansiona il QR con Steam Guard sul telefono. La sessione viene ricordata: non servirà ripetere il login a ogni download.")).font(.system(size: 20)).frame(maxWidth: 500) } }
+                if !library.steamMessage.isEmpty { Text(L10n.text(library.steamMessage)).font(.system(size: 16)).lineLimit(2) }
             }
             if model.page == .controllers {
-                Text(controller.readings).font(.system(size: 17, design: .monospaced)).foregroundStyle(.mint)
-                Text(controllerHelp).font(.system(size: 20)).lineSpacing(8)
-                Text("Le finestre di abbinamento e i permessi di macOS restano gestiti dal sistema. Il layout segue i comandi logici del controller.").font(.system(size: 15)).foregroundStyle(.white.opacity(0.65))
+                Text(L10n.text(controller.readings)).font(.system(size: 17, design: .monospaced)).foregroundStyle(.mint)
+                Text(L10n.text(controllerHelp)).font(.system(size: 20)).lineSpacing(8)
+                Text(L10n.text("Le finestre di abbinamento e i permessi di macOS restano gestiti dal sistema. Il layout segue i comandi logici del controller.")).font(.system(size: 15)).foregroundStyle(.white.opacity(0.65))
             }
             if model.page == .logs {
                 let lines = model.logText.components(separatedBy: .newlines)
                 Text(lines.dropFirst(min(model.logPage * 8, max(0, lines.count - 1))).prefix(8).joined(separator: "\n")).font(.system(size: 14, design: .monospaced)).frame(maxWidth: .infinity, alignment: .leading).lineLimit(10).padding(14).background(.white.opacity(0.035)).cornerRadius(10)
             }
-            if !model.status.isEmpty { Text(model.status).font(.system(size: 18)).foregroundStyle(.white.opacity(0.8)).lineLimit(5) }
-            if model.loading { ProgressView("Caricamento · " + controller.label(.back) + " per tornare indietro").tint(.mint) }
+            if !model.status.isEmpty { Text(L10n.text(model.status)).font(.system(size: 18)).foregroundStyle(.white.opacity(0.8)).lineLimit(5) }
+            if model.loading { ProgressView(L10n.text("Caricamento · " + controller.label(.back) + " per tornare indietro")).tint(.mint) }
         }
     }
     private var featured: Game? {
@@ -451,7 +454,7 @@ struct BigPictureView: View {
         HStack(spacing: 8) {
             ForEach(Array(DeckPage.sections.enumerated()), id: \.offset) { _, page in
                 Button { navigate(page) } label: {
-                    Text(page == .home ? "Home" : page.title).font(.system(size: 14, weight: .semibold))
+                    Text(L10n.text(page == .home ? "Home" : page.title)).font(.system(size: 14, weight: .semibold))
                         .padding(.horizontal, 14).padding(.vertical, 9)
                         .background(model.page == page ? Color.mint.opacity(0.22) : Color.white.opacity(0.04))
                         .clipShape(Capsule())
@@ -460,21 +463,21 @@ struct BigPictureView: View {
             }
             Spacer(minLength: 0)
         }
-        .accessibilityLabel("Sezioni · usa i dorsali per cambiare")
+        .accessibilityLabel(L10n.text("Sezioni · usa i dorsali per cambiare"))
     }
     @ViewBuilder private var featuredSummary: some View {
         if let featured {
             VStack(alignment: .leading, spacing: 8) {
                 if let logo = artwork.image(featured, kind: .logo) {
-                    Image(nsImage: logo).resizable().scaledToFit().frame(width: min(viewport * 0.3, 360), height: 56, alignment: .leading).accessibilityLabel(featured.title)
+                    Image(nsImage: logo).resizable().scaledToFit().frame(width: min(viewport * 0.3, 360), height: 56, alignment: .leading).accessibilityLabel(L10n.text(featured.title))
                 } else { Text(featured.title).font(.system(size: viewport >= 1500 ? 40 : 29, weight: .bold)).lineLimit(1) }
                 HStack(spacing: 18) {
-                    Label(featured.isInstalled ? "Pronto nella libreria" : "Disponibile da installare", systemImage: featured.isInstalled ? "checkmark.circle" : "arrow.down.circle")
-                    Text(featured.store.rawValue)
-                    if let minutes = featured.steamMinutes { Text(String(format: "%.1f ore Steam", Double(minutes) / 60)) }
+                    Label(L10n.text(featured.isInstalled ? "Pronto nella libreria" : "Disponibile da installare"), systemImage: featured.isInstalled ? "checkmark.circle" : "arrow.down.circle")
+                    Text(L10n.text(featured.store.rawValue))
+                    if let minutes = featured.steamMinutes { Text(L10n.text(String(format: "%.1f ore Steam", Double(minutes) / 60))) }
                 }.font(.system(size: 15)).foregroundStyle(.white.opacity(0.75))
                 if let asset = artwork.asset(featured, kind: .hero), asset.source == "SteamGridDB" {
-                    Text("Artwork: " + asset.author + " · SteamGridDB").font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+                    Text(L10n.text("Artwork: " + asset.author + " · SteamGridDB")).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
                 }
             }.padding(.vertical, 6)
                 .task(id: featured.identity + String(artwork.revision)) { await artwork.ensure(featured, kind: .logo) }
@@ -494,8 +497,8 @@ struct BigPictureView: View {
                                 if experience.game(game).favorite { Image(systemName: "star.fill").foregroundStyle(.yellow).padding(10).background(.black.opacity(0.6)).clipShape(Circle()).padding(8) }
                             }
                         Text(item.title).font(.system(size: 18, weight: .semibold)).lineLimit(1)
-                        Text(item.detail).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
-                        if let asset = artwork.asset(game, kind: .cover), asset.source == "SteamGridDB" { Text(asset.author + " · SteamGridDB").font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1) }
+                        Text(L10n.text(item.detail)).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                        if let asset = artwork.asset(game, kind: .cover), asset.source == "SteamGridDB" { Text(L10n.text(asset.author + " · SteamGridDB")).font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1) }
                     }.padding(10)
                 } else {
                     HStack(alignment: .center, spacing: 14) {
@@ -504,8 +507,8 @@ struct BigPictureView: View {
                         } else { Image(systemName: item.symbol).font(.system(size: 21, weight: .medium)).foregroundStyle(focused ? .mint : .white.opacity(0.65)).frame(width: 26) }
                         VStack(alignment: .leading, spacing: 6) {
                             Text(item.title).font(.system(size: 17, weight: .semibold)).lineLimit(2)
-                            if !item.detail.isEmpty { Text(item.detail).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6)).lineLimit(2) }
-                            if !item.enabled { Text("Non disponibile ora").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)) }
+                            if !item.detail.isEmpty { Text(L10n.text(item.detail)).font(.system(size: 12)).foregroundStyle(.white.opacity(0.6)).lineLimit(2) }
+                            if !item.enabled { Text(L10n.text("Non disponibile ora")).font(.system(size: 11)).foregroundStyle(.white.opacity(0.5)) }
                         }
                         Spacer(minLength: 0)
                     }.frame(maxWidth: .infinity, minHeight: 54, alignment: .leading).padding(16)
@@ -520,20 +523,20 @@ struct BigPictureView: View {
             .scaleEffect(focused ? 1.02 : 1)
         }
         .buttonStyle(.plain).focusable(false)
-        .accessibilityLabel(item.title + (focused ? ", selezionato" : ""))
-        .accessibilityHint(item.enabled ? controller.label(.confirm) + " per confermare" : "Azione non disponibile")
+        .accessibilityLabel(L10n.text(item.title + (focused ? ", selezionato" : "")))
+        .accessibilityHint(L10n.text(item.enabled ? controller.label(.confirm) + " per confermare" : "Azione non disponibile"))
         .onHover { inside in if inside { model.selected[focusKey] = item.id } }
     }
     private var controllerHelp: String {
         "Croce/levetta: seleziona · \(controller.label(.confirm)): conferma · \(controller.label(.back)): indietro · \(controller.label(.search)): cerca · \(controller.label(.favorite)): preferito\n\(controller.label(.previousSection))/\(controller.label(.nextSection)): sezioni · \(controller.label(.previousPage))/\(controller.label(.nextPage)): pagine\n\(controller.label(.menu)): Home. Dal gioco, tienilo per 1,2 secondi per tornare qui."
     }
     private func commandHint(_ command: DeckCommand, _ title: String) -> some View {
-        Label(title, systemImage: controller.glyph(command).symbol).labelStyle(.titleAndIcon)
+        Label(L10n.text(title), systemImage: controller.glyph(command).symbol).labelStyle(.titleAndIcon)
     }
     private var footer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if library.engine.busy { ProgressView(value: library.engine.progress).tint(.mint); Text(library.engine.message).font(.system(size: 15)).lineLimit(2) }
-            if steam.busy || steam.preparing { HStack { ProgressView().controlSize(.small); Text(steam.message).font(.system(size: 15)).lineLimit(2) } }
+            if library.engine.busy { ProgressView(value: library.engine.progress).tint(.mint); Text(L10n.text(library.engine.message)).font(.system(size: 15)).lineLimit(2) }
+            if steam.busy || steam.preparing { HStack { ProgressView().controlSize(.small); Text(L10n.text(steam.message)).font(.system(size: 15)).lineLimit(2) } }
             HStack(spacing: 22) {
                 commandHint(.confirm, "Conferma").foregroundStyle(.mint)
                 commandHint(.back, "Indietro")
@@ -541,22 +544,22 @@ struct BigPictureView: View {
                 commandHint(.menu, "Home")
                 commandHint(.interfaceMode, "Modalità PC")
                 Spacer()
-                Text("0.13.0 · ⌘⇧B Modalità PC").foregroundStyle(.white.opacity(0.45))
+                Text(L10n.text("0.15.0 · ⌘⇧B Modalità PC")).foregroundStyle(.white.opacity(0.45))
             }.font(.system(size: 16, weight: .medium))
-            if !controller.connected { Text("Collega un controller. Puoi anche usare frecce, Invio, Esc, Tab e X/Y per provare la navigazione.").font(.system(size: 14)).foregroundStyle(.orange) }
+            if !controller.connected { Text(L10n.text("Collega un controller. Puoi anche usare frecce, Invio, Esc, Tab e X/Y per provare la navigazione.")).font(.system(size: 14)).foregroundStyle(.orange) }
         }.padding(.top, 8)
     }
     private func keyboardView(_ keyboard: DeckKeyboard) -> some View {
         VStack(alignment: .leading, spacing: 24) {
-            Text(keyboard.text.isEmpty ? "Scrivi usando la tastiera a schermo" : (keyboard.secure ? String(repeating: "•", count: keyboard.text.count) : keyboard.text) + " ▌").font(.system(size: 28)).lineLimit(2).frame(maxWidth: .infinity, minHeight: 70, alignment: .leading).padding(18).background(.white.opacity(0.08)).cornerRadius(12)
+            Text(L10n.text(keyboard.text.isEmpty ? "Scrivi usando la tastiera a schermo" : (keyboard.secure ? String(repeating: "•", count: keyboard.text.count) : keyboard.text) + " ▌")).font(.system(size: 28)).lineLimit(2).frame(maxWidth: .infinity, minHeight: 70, alignment: .leading).padding(18).background(.white.opacity(0.08)).cornerRadius(12)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: DeckKeyboard.columns), spacing: 12) {
                 ForEach(Array(DeckKeyboard.keys.enumerated()), id: \.offset) { index, key in
                     Button { model.keyboard?.selected = index; typeKey(key) } label: {
-                        Text(keyboard.lowercase && key.count == 1 ? key.lowercased() : key).font(.system(size: key.count > 3 ? 14 : 24, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 48).padding(5).background(keyboard.selected == index ? Color.mint.opacity(0.3) : Color.white.opacity(0.06)).overlay(RoundedRectangle(cornerRadius: 9).stroke(keyboard.selected == index ? Color.mint : Color.clear, lineWidth: 3)).cornerRadius(9)
+                        Text(L10n.text(keyboard.lowercase && key.count == 1 ? key.lowercased() : key)).font(.system(size: key.count > 3 ? 14 : 24, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 48).padding(5).background(keyboard.selected == index ? Color.mint.opacity(0.3) : Color.white.opacity(0.06)).overlay(RoundedRectangle(cornerRadius: 9).stroke(keyboard.selected == index ? Color.mint : Color.clear, lineWidth: 3)).cornerRadius(9)
                     }.buttonStyle(.plain).focusable(false)
                 }
             }
-            Text("Croce o levetta: seleziona · \(controller.label(.confirm)): scrivi · \(controller.label(.search)): cancella · \(controller.label(.menu)): conferma · \(controller.label(.back)): annulla").font(.system(size: 17)).foregroundStyle(.white.opacity(0.7))
+            Text(L10n.text("Croce o levetta: seleziona · \(controller.label(.confirm)): scrivi · \(controller.label(.search)): cancella · \(controller.label(.menu)): conferma · \(controller.label(.back)): annulla")).font(.system(size: 17)).foregroundStyle(.white.opacity(0.7))
             Spacer(minLength: 0)
         }
     }
@@ -578,6 +581,7 @@ struct BigPictureView: View {
         model.selected[focusKey] = browsingLibrary ? filterActions.first?.id : ids.first
     }
     private func handle(_ command: DeckCommand) {
+        guard !controller.sessionMenuVisible, !controller.navigationSuspended else { return }
         if model.keyboard != nil {
             switch command {
             case .back: model.keyboard = nil

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DeckArtwork: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     let game: Game
     var kind: ArtworkKind = .landscape
     @EnvironmentObject var artwork: ArtworkStore
@@ -19,20 +20,21 @@ struct DeckArtwork: View {
     }
 }
 struct ArtworkSettingsView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @EnvironmentObject var artwork: ArtworkStore
     @State private var key = ""
     var body: some View {
-        GroupBox("Copertine e sfondi · SteamGridDB") {
+        GroupBox(L10n.text("Copertine e sfondi · SteamGridDB")) {
             VStack(alignment: .leading, spacing: 12) {
-                Text(artwork.message).foregroundStyle(.secondary)
-                SecureField("Chiave API SteamGridDB", text: $key)
+                Text(L10n.text(artwork.message)).foregroundStyle(.secondary)
+                SecureField(L10n.text("Chiave API SteamGridDB"), text: $key)
                 HStack {
-                    Button("Salva chiave") { artwork.configure(key); key = "" }.disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if artwork.configured { Button("Scollega") { artwork.configure("") } }
-                    Button("Aggiorna immagini") { artwork.refresh() }
+                    Button(L10n.text("Salva chiave")) { artwork.configure(key); key = "" }.disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if artwork.configured { Button(L10n.text("Scollega")) { artwork.configure("") } }
+                    Button(L10n.text("Aggiorna immagini")) { artwork.refresh() }
                     Link("Ottieni una chiave personale", destination: URL(string: "https://www.steamgriddb.com/profile/preferences/api")!)
                 }
-                Text("Copertine e sfondi vengono cercati automaticamente. La chiave resta sul Mac; le immagini sono conservate in cache per l’uso offline. Artwork degli autori SteamGridDB; in assenza di risultati vengono usate le immagini Steam.").font(.caption).foregroundStyle(.secondary)
+                Text(L10n.text("Copertine e sfondi vengono cercati automaticamente. La chiave resta sul Mac; le immagini sono conservate in cache per l’uso offline. Artwork degli autori SteamGridDB; in assenza di risultati vengono usate le immagini Steam.")).font(.caption).foregroundStyle(.secondary)
             }.padding(12)
         }
     }

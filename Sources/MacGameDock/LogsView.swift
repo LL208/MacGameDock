@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct LogsView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @EnvironmentObject var library: Library
     @State private var selected = "application"
     @State private var content = ""
@@ -16,29 +17,29 @@ struct LogsView: View {
     private var visible: String { search.isEmpty ? content : content.components(separatedBy: .newlines).filter { $0.localizedCaseInsensitiveContains(search) }.joined(separator: "\n") }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Log e diagnostica").font(.largeTitle.bold())
-            Text("Avvio dei giochi, componenti Wine e sincronizzazione dei trofei. Password e token non vengono registrati.").foregroundStyle(.secondary)
+            Text(L10n.text("Log e diagnostica")).font(.largeTitle.bold())
+            Text(L10n.text("Avvio dei giochi, componenti Wine e sincronizzazione dei trofei. Password e token non vengono registrati.")).foregroundStyle(.secondary)
             HStack {
-                Picker("Log", selection: $selected) {
-                    Text("Applicazione · Steam · Trofei").tag("application")
-                    Text("Motore Windows · Bootstrap").tag("engine")
-                    ForEach(library.data.games.filter { FileManager.default.fileExists(atPath: library.log(for: $0).path) }.sorted { $0.title < $1.title }) { game in Text(game.title + " · Wine").tag(game.id.uuidString) }
+                Picker(L10n.text("Log"), selection: $selected) {
+                    Text(L10n.text("Applicazione · Steam · Trofei")).tag("application")
+                    Text(L10n.text("Motore Windows · Bootstrap")).tag("engine")
+                    ForEach(library.data.games.filter { FileManager.default.fileExists(atPath: library.log(for: $0).path) }.sorted { $0.title < $1.title }) { game in Text(L10n.text(game.title + " · Wine")).tag(game.id.uuidString) }
                 }.frame(maxWidth: 420)
-                Toggle("In tempo reale", isOn: $live).toggleStyle(.checkbox)
-                Button("Aggiorna") { refresh() }
+                Toggle(L10n.text("In tempo reale"), isOn: $live).toggleStyle(.checkbox)
+                Button(L10n.text("Aggiorna")) { refresh() }
             }
             HStack {
-                TextField("Filtra le righe", text: $search).textFieldStyle(.roundedBorder)
-                Button("Copia") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(visible, forType: .string); feedback = "Log copiato." }
-                Button("Esporta…") { export() }
-                Button("Mostra cartella") { NSWorkspace.shared.open(library.root.appendingPathComponent("Logs")) }
+                TextField(L10n.text("Filtra le righe"), text: $search).textFieldStyle(.roundedBorder)
+                Button(L10n.text("Copia")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(visible, forType: .string); feedback = "Log copiato." }
+                Button(L10n.text("Esporta…")) { export() }
+                Button(L10n.text("Mostra cartella")) { NSWorkspace.shared.open(library.root.appendingPathComponent("Logs")) }
             }
             ScrollView([.horizontal, .vertical]) {
-                Text(visible.isEmpty ? "Nessuna riga corrispondente." : visible).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                Text(L10n.text(visible.isEmpty ? "Nessuna riga corrispondente." : visible)).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading).padding(16)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black.opacity(0.25)).cornerRadius(12)
-            Text(feedback).font(.caption).foregroundStyle(.secondary)
-            Button("Prova notifica trofeo") { library.achievements.testNotification(); feedback = "Notifica di prova: nessun trofeo è stato sbloccato o inviato a Steam." }
+            Text(L10n.text(feedback)).font(.caption).foregroundStyle(.secondary)
+            Button(L10n.text("Prova notifica trofeo")) { library.achievements.testNotification(); feedback = "Notifica di prova: nessun trofeo è stato sbloccato o inviato a Steam." }
         }
         .onChange(of: selected) { _ in refresh() }
         .task {

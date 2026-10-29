@@ -1,0 +1,9 @@
+# English and Italian — 0.15.0
+
+The interface selects the first supported language in the Mac's preferred-language list (Italian or English), falling back to English. Settings → Language offers Automatic, Italiano and English. Big Picture exposes the same choices through a controller-accessible cycling action. Selection is stored in the app's UserDefaults domain without changing AppleLanguages or system preferences.
+
+Changing language updates existing views without recreating the library or resetting navigation. Filters, collections, download IDs and stored preferences keep their existing identifiers; only presentation labels change. The bundled English catalog contains 813 entries, including errors, confirmations and interpolated messages. No external translation service is used. A bounded cache avoids repeated matching during controller navigation.
+
+Store descriptions are requested in the chosen language with separate language caches. Achievement requests also carry the current language, including commands to the persistent Steam session: changing language does not require login. Steam content depends on translations published by each game, with English fallback. Interface language does not change installed game files or game language. Raw logs, game titles, paths and filenames retain their original values; operating-system messages follow system settings.
+
+Verification: Xcode Release build succeeded; 142 Swift tests, 137 passed, 5 skipped and no failures. C# regressions also cover Italian/English, language changes in persistent sessions and missing-translation fallback. App/ZIP 0.15.0 build 35 passed signature, localization-resource and archive checks. Visual inspection confirmed English in Big Picture and desktop mode. The accessibility reader failed on Settings, so the selector was not visually verified; selection and persistence are covered by automated tests.

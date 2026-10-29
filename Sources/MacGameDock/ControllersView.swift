@@ -4,6 +4,7 @@ import GameController
 import SwiftUI
 
 struct ControllersView: View {
+    @ObservedObject private var appLanguage = AppLanguage.shared
     @EnvironmentObject var experience: GameExperience
     @State private var controllers: [GCController] = []
     @State private var testing = false
@@ -12,26 +13,26 @@ struct ControllersView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Controller").font(.largeTitle.bold())
-                Text("Collega il controller via Bluetooth o USB. Il rilevamento usa il supporto nativo di macOS.").foregroundStyle(.secondary)
+                Text(L10n.text("Controller")).font(.largeTitle.bold())
+                Text(L10n.text("Collega il controller via Bluetooth o USB. Il rilevamento usa il supporto nativo di macOS.")).foregroundStyle(.secondary)
                 HStack {
-                    Button("Cerca controller wireless") { GCController.startWirelessControllerDiscovery(completionHandler: nil) }
-                    Button("Impostazioni controller") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Game-Controllers-Settings.extension")!) }
-                    Toggle("Test pulsanti e levette", isOn: $testing)
+                    Button(L10n.text("Cerca controller wireless")) { GCController.startWirelessControllerDiscovery(completionHandler: nil) }
+                    Button(L10n.text("Impostazioni controller")) { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Game-Controllers-Settings.extension")!) }
+                    Toggle(L10n.text("Test pulsanti e levette"), isOn: $testing)
                 }
-                Toggle("Inverti Conferma e Indietro nell’interfaccia", isOn: Binding(get: { experience.preferences.swapControllerConfirmBack == true }, set: { value in experience.settings { $0.swapControllerConfirmBack = value } }))
-                if controllers.isEmpty { Label("Nessun controller compatibile rilevato", systemImage: "gamecontroller") }
+                Toggle(L10n.text("Inverti Conferma e Indietro nell’interfaccia"), isOn: Binding(get: { experience.preferences.swapControllerConfirmBack == true }, set: { value in experience.settings { $0.swapControllerConfirmBack = value } }))
+                if controllers.isEmpty { Label(L10n.text("Nessun controller compatibile rilevato"), systemImage: "gamecontroller") }
                 ForEach(controllers, id: \.self) { controller in
-                    GroupBox(controller.vendorName ?? "Controller") {
+                    GroupBox(L10n.text(controller.vendorName ?? "Controller")) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(controller.productCategory)
-                            Text(controller.extendedGamepad == nil ? "Profilo senza gamepad esteso" : "Gamepad esteso disponibile")
-                            if let battery = controller.battery, battery.batteryLevel >= 0 { Text("Batteria: \(Int(battery.batteryLevel * 100))%") }
-                            if testing { Text(readings[String(describing: ObjectIdentifier(controller))] ?? "Premi un pulsante…").font(.caption.monospaced()) }
+                            Text(L10n.text(controller.productCategory))
+                            Text(L10n.text(controller.extendedGamepad == nil ? "Profilo senza gamepad esteso" : "Gamepad esteso disponibile"))
+                            if let battery = controller.battery, battery.batteryLevel >= 0 { Text(L10n.text("Batteria: \(Int(battery.batteryLevel * 100))%")) }
+                            if testing { Text(L10n.text(readings[String(describing: ObjectIdentifier(controller))] ?? "Premi un pulsante…")).font(.caption.monospaced()) }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                     }
                 }
-                Text("La rimappatura di sistema si configura nelle impostazioni di macOS. Il passaggio degli input ai giochi Windows dipende dal runtime Wine e dal gioco; questa pagina non crea un controller virtuale né sostituisce Steam Input.").font(.callout).foregroundStyle(.secondary)
+                Text(L10n.text("La rimappatura di sistema si configura nelle impostazioni di macOS. Il passaggio degli input ai giochi Windows dipende dal runtime Wine e dal gioco; questa pagina non crea un controller virtuale né sostituisce Steam Input.")).font(.callout).foregroundStyle(.secondary)
             }
         }
         .onAppear { controllers = GCController.controllers() }

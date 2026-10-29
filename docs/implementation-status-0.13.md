@@ -1,11 +1,11 @@
-# Dettaglio gioco 0.13.0
+# Native game details — 0.13.0
 
-Panoramica nativa desktop e Big Picture: descrizione breve ed estesa in italiano quando disponibile nello store, generi, sviluppatore, giocatori attualmente online su Steam, modalità singolo/online/cooperativa locale/schermo condiviso o split-screen. Assenza di un tag significa non dichiarato, non certificazione di incompatibilità. Il massimo locale non è fornito dall’API usata ed è indicato come non specificato.
+Desktop and Big Picture provide short/full store descriptions, genres, developer, current Steam player count and declared single-player, online, local co-op and shared/split-screen modes. At this version descriptions request Italian when available. A missing category means undeclared, not proven incompatibility. The API does not supply a local-player maximum; the UI leaves it unspecified.
 
-La sezione trofei carica automaticamente schema e progressi, riusa subito la cache per account/gioco e riceve gli aggiornamenti del monitor. Metadati, giocatori e trofei sono indipendenti; cambiando gioco/account si scartano le risposte tardive. Le letture non preparano il ponte Steam API e non modificano i file del gioco.
+Achievements automatically load schema and progress, immediately reuse the account/game cache and receive monitor updates. Metadata, player counts and achievements load independently. Late responses are discarded after changing games/accounts. Reading details does not prepare the Steam API bridge or alter game files.
 
-SteamSocial viene preferito quando connesso. Il fallback al downloader attende operazioni esistenti; la sua operazione ha un UUID distinto. Chiusura della pagina e avvio del gioco possono annullare soltanto la lettura di proprietà della pagina, senza interrompere download altrui.
+SteamSocial is preferred when connected. Downloader fallback waits for existing operations and uses its own UUID. Closing the page or launching a game cancels only the page-owned read, never unrelated downloads.
 
-## Verifica
+## Verification
 
-Test su parsing descrizione/modalità, distinzione zero giocatori vs dato non disponibile, caricamento dei trofei con metadati offline, cache distinta tra account, cache offline e scarto delle risposte del gioco precedente. I servizi sono simulati: un nuovo sblocco Steam non è stato prodotto da questi test. Il conteggio reale e lo schema personale richiedono la disponibilità dei servizi Steam e della sessione dell’utente.
+Tests cover description/mode parsing, zero players vs. unavailable data, achievement loading when metadata is offline, account-separated caches, offline reuse and stale-response rejection. Services are simulated: these tests did not produce a newly earned Steam achievement. Live counts and personal schemas require Steam availability and the user's session.

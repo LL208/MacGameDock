@@ -47,7 +47,7 @@ final class AchievementNotifier {
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true; window.ignoresMouseEvents = true; window.hidesOnDeactivate = false
         window.contentView = NSHostingView(rootView: HStack(spacing: 13) {
             AsyncImage(url: achievement.imageURL) { image in image.resizable() } placeholder: { Image(systemName: "trophy.fill").font(.largeTitle).foregroundStyle(.yellow) }.frame(width: 48, height: 48).cornerRadius(8)
-            VStack(alignment: .leading, spacing: 5) { Text("Trofeo ottenuto").font(.caption).foregroundStyle(.mint); Text(achievement.displayTitle).font(.headline).lineLimit(2); Text(game).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            VStack(alignment: .leading, spacing: 5) { Text(L10n.text("Trofeo ottenuto")).font(.caption).foregroundStyle(.mint); Text(achievement.displayTitle).font(.headline).lineLimit(2); Text(L10n.text(game)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             Spacer()
         }.padding(17).frame(width: 350, height: 110).background(Color(red: 0.09, green: 0.11, blue: 0.15)).cornerRadius(14).preferredColorScheme(.dark))
         panel = window; window.orderFrontRegardless()

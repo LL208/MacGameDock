@@ -50,3 +50,24 @@ var reserve=limiterType.GetMethod("Reserve",BindingFlags.Instance|BindingFlags.N
 double Reserve(uint bytes,double now) => (double)reserve.Invoke(limiter,new object[]{bytes,now});
 if(Math.Abs(Reserve(1048576,0)-1000)>0.001 || Math.Abs(Reserve(1048576,0)-2000)>0.001 || Math.Abs(Reserve(1048576,5000)-1000)>0.001) throw new Exception("Bandwidth reservations do not bound aggregate parallel throughput");
 Console.WriteLine("Aggregate bandwidth limiter: concurrent reservations and idle recovery passed without network or sleeps.");
+
+// A disconnected session must never dereference SteamID or touch the destination.
+var disconnected = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(session);
+var inventory = session.GetMethod("ExportDeckCloudInventory");
+try { ((System.Threading.Tasks.Task)inventory.Invoke(disconnected, new object[]{(uint)10, "unused-cloud-inventory.json"})).GetAwaiter().GetResult(); throw new Exception("Disconnected session accepted"); }
+catch (Exception e) when (e.GetType().Name == "DeckCloudException") { if ((string)e.GetType().GetProperty("Code").GetValue(e) != "steam_NoConnection") throw; }
+Console.WriteLine("Disconnected cloud inventory: typed connection error, no output written.");
+var localization = session.GetMethod("Localized", BindingFlags.NonPublic | BindingFlags.Static);
+var languageContext = (System.Threading.AsyncLocal<string>)session.GetField("deckLanguage", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+var localizedNode = new KeyValue("title");
+localizedNode.Children.Add(new KeyValue("italian", "Trofeo"));
+localizedNode.Children.Add(new KeyValue("english", "Achievement"));
+languageContext.Value = "italian";
+if ((string)localization.Invoke(null, new object[]{localizedNode}) != "Trofeo") throw new Exception("Italian achievement localization failed");
+languageContext.Value = "english";
+if ((string)localization.Invoke(null, new object[]{localizedNode}) != "Achievement") throw new Exception("Live achievement language switch failed");
+languageContext.Value = "italian";
+var fallbackNode = new KeyValue("title"); fallbackNode.Children.Add(new KeyValue("english", "Fallback"));
+if ((string)localization.Invoke(null, new object[]{fallbackNode}) != "Fallback") throw new Exception("Achievement English fallback failed");
+languageContext.Value = null;
+Console.WriteLine("Achievement language selection and live language changes: Italian, English and missing-translation fallback passed.");
